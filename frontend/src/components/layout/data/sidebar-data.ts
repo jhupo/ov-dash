@@ -1,4 +1,5 @@
 import {
+  Bell,
   LayoutDashboard,
   ListTodo,
   HelpCircle,
@@ -68,6 +69,11 @@ export const sidebarData: SidebarData = {
               title: '服务器',
               url: '/settings/servers',
               icon: Server,
+            },
+            {
+              title: '通知',
+              url: '/settings/notifications',
+              icon: Bell,
             },
             {
               title: '帮助中心',

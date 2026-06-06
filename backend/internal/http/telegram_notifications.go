@@ -23,6 +23,8 @@ type updateTelegramSettingsRequest struct {
 	Enabled           bool    `json:"enabled"`
 	BotToken          *string `json:"bot_token"`
 	InboundToken      *string `json:"inbound_token"`
+	GroupEnabled      bool    `json:"group_enabled"`
+	GroupChatID       string  `json:"group_chat_id"`
 	ClearBotToken     bool    `json:"clear_bot_token"`
 	ClearInboundToken bool    `json:"clear_inbound_token"`
 }
@@ -33,11 +35,12 @@ type updateUserTelegramSettingsRequest struct {
 }
 
 type incomingMessageRequest struct {
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
-	Title    string `json:"title"`
-	Message  string `json:"message"`
-	Source   string `json:"source"`
+	UserID         string `json:"user_id"`
+	Username       string `json:"username"`
+	Title          string `json:"title"`
+	Message        string `json:"message"`
+	Source         string `json:"source"`
+	DeliverToGroup bool   `json:"deliver_to_group"`
 }
 
 func (h *TelegramNotificationsHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +63,8 @@ func (h *TelegramNotificationsHandler) UpdateSettings(w http.ResponseWriter, r *
 		Enabled:           payload.Enabled,
 		BotToken:          payload.BotToken,
 		InboundToken:      payload.InboundToken,
+		GroupEnabled:      payload.GroupEnabled,
+		GroupChatID:       payload.GroupChatID,
 		ClearBotToken:     payload.ClearBotToken,
 		ClearInboundToken: payload.ClearInboundToken,
 	})
@@ -106,11 +111,12 @@ func (h *TelegramNotificationsHandler) IncomingMessage(w http.ResponseWriter, r 
 	}
 
 	result, err := h.service.DeliverIncomingMessage(r.Context(), inboundTokenFromRequest(r), notifications.IncomingMessageInput{
-		UserID:   payload.UserID,
-		Username: payload.Username,
-		Title:    payload.Title,
-		Message:  payload.Message,
-		Source:   payload.Source,
+		UserID:         payload.UserID,
+		Username:       payload.Username,
+		Title:          payload.Title,
+		Message:        payload.Message,
+		Source:         payload.Source,
+		DeliverToGroup: payload.DeliverToGroup,
 	})
 	if err != nil {
 		writeNotificationError(w, err, "incoming_message_failed")
@@ -142,6 +148,8 @@ func writeNotificationError(w http.ResponseWriter, err error, fallback string) {
 		errors.Is(err, notifications.ErrInboundTokenRequired),
 		errors.Is(err, notifications.ErrRecipientRequired),
 		errors.Is(err, notifications.ErrTelegramChatIDRequired),
+		errors.Is(err, notifications.ErrTelegramGroupDisabled),
+		errors.Is(err, notifications.ErrTelegramGroupIDRequired),
 		errors.Is(err, notifications.ErrMessageRequired),
 		errors.Is(err, notifications.ErrNotificationsDisabled),
 		errors.Is(err, notifications.ErrRecipientDisabled):

@@ -15,6 +15,8 @@ var (
 	ErrRecipientNotFound        = errors.New("notification recipient not found")
 	ErrRecipientDisabled        = errors.New("recipient telegram notifications are disabled")
 	ErrTelegramChatIDRequired   = errors.New("telegram chat id is required")
+	ErrTelegramGroupDisabled    = errors.New("telegram group notifications are disabled")
+	ErrTelegramGroupIDRequired  = errors.New("telegram group chat id is required")
 	ErrMessageRequired          = errors.New("message is required")
 	ErrNotificationsDisabled    = errors.New("telegram notifications are disabled")
 )
@@ -48,6 +50,7 @@ func (s *Service) UpdateTelegramSettings(ctx context.Context, input UpdateTelegr
 		value := strings.TrimSpace(*input.InboundToken)
 		input.InboundToken = &value
 	}
+	input.GroupChatID = strings.TrimSpace(input.GroupChatID)
 
 	nextBotToken := ""
 	nextInboundToken := ""
@@ -73,6 +76,9 @@ func (s *Service) UpdateTelegramSettings(ctx context.Context, input UpdateTelegr
 	}
 	if input.Enabled && nextInboundToken == "" {
 		return TelegramSettings{}, ErrInboundTokenRequired
+	}
+	if input.GroupEnabled && input.GroupChatID == "" {
+		return TelegramSettings{}, ErrTelegramGroupIDRequired
 	}
 
 	return s.repo.UpdateTelegramSettings(ctx, input)
@@ -117,35 +123,58 @@ func (s *Service) DeliverIncomingMessage(ctx context.Context, inboundToken strin
 	input.Title = strings.TrimSpace(input.Title)
 	input.Message = strings.TrimSpace(input.Message)
 	input.Source = strings.TrimSpace(input.Source)
-	if input.UserID == "" && input.Username == "" {
-		return IncomingMessageResult{}, ErrRecipientRequired
-	}
 	if input.Message == "" {
 		return IncomingMessageResult{}, ErrMessageRequired
 	}
 
-	recipient, err := s.repo.FindRecipient(ctx, input.UserID, input.Username)
-	if IsNotFound(err) {
-		return IncomingMessageResult{}, ErrRecipientNotFound
+	sendToUser := input.UserID != "" || input.Username != ""
+	sendToGroup := input.DeliverToGroup || !sendToUser
+	if !sendToUser && !sendToGroup {
+		return IncomingMessageResult{}, ErrRecipientRequired
 	}
-	if err != nil {
-		return IncomingMessageResult{}, err
-	}
-	if !recipient.Enabled {
-		return IncomingMessageResult{}, ErrRecipientDisabled
-	}
-	if recipient.ChatID == "" {
-		return IncomingMessageResult{}, ErrTelegramChatIDRequired
+	if sendToGroup {
+		if !settings.GroupEnabled {
+			return IncomingMessageResult{}, ErrTelegramGroupDisabled
+		}
+		if settings.GroupChatID == "" {
+			return IncomingMessageResult{}, ErrTelegramGroupIDRequired
+		}
 	}
 
-	if err := s.sender.SendMessage(ctx, settings.BotToken, recipient.ChatID, formatTelegramMessage(input)); err != nil {
-		return IncomingMessageResult{}, err
+	result := IncomingMessageResult{}
+	text := formatTelegramMessage(input)
+
+	if sendToUser {
+		recipient, err := s.repo.FindRecipient(ctx, input.UserID, input.Username)
+		if IsNotFound(err) {
+			return IncomingMessageResult{}, ErrRecipientNotFound
+		}
+		if err != nil {
+			return IncomingMessageResult{}, err
+		}
+		if !recipient.Enabled {
+			return IncomingMessageResult{}, ErrRecipientDisabled
+		}
+		if recipient.ChatID == "" {
+			return IncomingMessageResult{}, ErrTelegramChatIDRequired
+		}
+		if err := s.sender.SendMessage(ctx, settings.BotToken, recipient.ChatID, text); err != nil {
+			return IncomingMessageResult{}, err
+		}
+		result.UserDelivered = true
+		result.UserID = recipient.UserID
+		result.Username = recipient.Username
 	}
-	return IncomingMessageResult{
-		Delivered: true,
-		UserID:    recipient.UserID,
-		Username:  recipient.Username,
-	}, nil
+
+	if sendToGroup {
+		if err := s.sender.SendMessage(ctx, settings.BotToken, settings.GroupChatID, text); err != nil {
+			return IncomingMessageResult{}, err
+		}
+		result.GroupDelivered = true
+	}
+
+	result.Delivered = result.UserDelivered || result.GroupDelivered
+	return result, nil
 }
 
 func formatTelegramMessage(input IncomingMessageInput) string {

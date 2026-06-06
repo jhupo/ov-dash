@@ -62,6 +62,8 @@ curl -X POST http://localhost:8080/api/v1/incoming-messages \
 ```
 
 The endpoint also accepts `Authorization: Bearer <inbound-token>` and can target users by `user_id` instead of `username`.
+If the request omits both `username` and `user_id`, the message is delivered to the configured Telegram group.
+Set `"deliver_to_group": true` to send a user-targeted message to both the user and the group.
 
 ## Test deployment
 

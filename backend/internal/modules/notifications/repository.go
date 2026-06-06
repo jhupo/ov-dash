@@ -23,12 +23,14 @@ func (r *Repository) GetTelegramSettings(ctx context.Context) (TelegramSettings,
 		INSERT INTO telegram_notification_settings (id)
 		VALUES ($1)
 		ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
-		RETURNING id, enabled, bot_token, inbound_token, updated_at
+		RETURNING id, enabled, bot_token, inbound_token, group_enabled, group_chat_id, updated_at
 	`, DefaultTelegramSettingsID).Scan(
 		&settings.ID,
 		&settings.Enabled,
 		&settings.BotToken,
 		&settings.InboundToken,
+		&settings.GroupEnabled,
+		&settings.GroupChatID,
 		&settings.UpdatedAt,
 	)
 	return settings, err
@@ -60,14 +62,18 @@ func (r *Repository) UpdateTelegramSettings(ctx context.Context, input UpdateTel
 		SET enabled = $2,
 			bot_token = $3,
 			inbound_token = $4,
+			group_enabled = $5,
+			group_chat_id = $6,
 			updated_at = now()
 		WHERE id = $1
-		RETURNING id, enabled, bot_token, inbound_token, updated_at
-	`, DefaultTelegramSettingsID, input.Enabled, botToken, inboundToken).Scan(
+		RETURNING id, enabled, bot_token, inbound_token, group_enabled, group_chat_id, updated_at
+	`, DefaultTelegramSettingsID, input.Enabled, botToken, inboundToken, input.GroupEnabled, input.GroupChatID).Scan(
 		&settings.ID,
 		&settings.Enabled,
 		&settings.BotToken,
 		&settings.InboundToken,
+		&settings.GroupEnabled,
+		&settings.GroupChatID,
 		&settings.UpdatedAt,
 	)
 	return settings, err

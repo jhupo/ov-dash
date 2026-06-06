@@ -5,7 +5,7 @@ export function SettingsNotifications() {
   return (
     <ContentSection
       title='Telegram 通知'
-      desc='配置 Bot Token、入站消息 Token，以及用户到 Telegram Chat ID 的映射。'
+      desc='配置 Bot Token、入站消息 Token、群组通知，以及用户到 Telegram Chat ID 的映射。'
     >
       <NotificationsForm />
     </ContentSection>

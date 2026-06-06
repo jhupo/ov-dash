@@ -9,6 +9,8 @@ type TelegramSettings struct {
 	Enabled      bool      `json:"enabled"`
 	BotToken     string    `json:"-"`
 	InboundToken string    `json:"-"`
+	GroupEnabled bool      `json:"group_enabled"`
+	GroupChatID  string    `json:"group_chat_id"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
@@ -17,6 +19,8 @@ type PublicTelegramSettings struct {
 	Enabled         bool      `json:"enabled"`
 	HasBotToken     bool      `json:"has_bot_token"`
 	HasInboundToken bool      `json:"has_inbound_token"`
+	GroupEnabled    bool      `json:"group_enabled"`
+	GroupChatID     string    `json:"group_chat_id"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
@@ -34,6 +38,8 @@ type UpdateTelegramSettingsInput struct {
 	Enabled           bool
 	BotToken          *string
 	InboundToken      *string
+	GroupEnabled      bool
+	GroupChatID       string
 	ClearBotToken     bool
 	ClearInboundToken bool
 }
@@ -45,17 +51,20 @@ type UpdateUserTelegramSettingsInput struct {
 }
 
 type IncomingMessageInput struct {
-	UserID   string
-	Username string
-	Title    string
-	Message  string
-	Source   string
+	UserID         string
+	Username       string
+	Title          string
+	Message        string
+	Source         string
+	DeliverToGroup bool
 }
 
 type IncomingMessageResult struct {
-	Delivered bool   `json:"delivered"`
-	UserID    string `json:"user_id,omitempty"`
-	Username  string `json:"username,omitempty"`
+	Delivered      bool   `json:"delivered"`
+	UserDelivered  bool   `json:"user_delivered,omitempty"`
+	GroupDelivered bool   `json:"group_delivered,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	Username       string `json:"username,omitempty"`
 }
 
 func (s TelegramSettings) Public() PublicTelegramSettings {
@@ -64,6 +73,8 @@ func (s TelegramSettings) Public() PublicTelegramSettings {
 		Enabled:         s.Enabled,
 		HasBotToken:     s.BotToken != "",
 		HasInboundToken: s.InboundToken != "",
+		GroupEnabled:    s.GroupEnabled,
+		GroupChatID:     s.GroupChatID,
 		UpdatedAt:       s.UpdatedAt,
 	}
 }

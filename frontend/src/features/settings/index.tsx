@@ -28,6 +28,11 @@ const systemNavItems = [
     icon: <Server size={18} />,
   },
   {
+    title: '通知',
+    href: '/settings/notifications',
+    icon: <Bell size={18} />,
+  },
+  {
     title: '帮助中心',
     href: '/settings/help-center',
     icon: <CircleHelp size={18} />,
@@ -46,11 +51,6 @@ const profileNavItems = [
     icon: <Palette size={18} />,
   },
   {
-    title: '通知',
-    href: '/settings/notifications',
-    icon: <Bell size={18} />,
-  },
-  {
     title: '显示',
     href: '/settings/display',
     icon: <Monitor size={18} />,
@@ -62,6 +62,7 @@ export function Settings() {
   const isSystemSettings =
     pathname === '/settings/proxy' ||
     pathname === '/settings/servers' ||
+    pathname === '/settings/notifications' ||
     pathname === '/settings/help-center'
 
   return (

@@ -5,6 +5,8 @@ export type TelegramNotificationSettings = {
   enabled: boolean
   has_bot_token: boolean
   has_inbound_token: boolean
+  group_enabled: boolean
+  group_chat_id: string
   updated_at: string
 }
 
@@ -26,6 +28,8 @@ export type UpdateTelegramNotificationSettingsPayload = {
   enabled: boolean
   bot_token?: string
   inbound_token?: string
+  group_enabled: boolean
+  group_chat_id: string
   clear_bot_token?: boolean
   clear_inbound_token?: boolean
 }

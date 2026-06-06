@@ -38,6 +38,8 @@ const telegramFormSchema = z.object({
   enabled: z.boolean(),
   botToken: z.string(),
   inboundToken: z.string(),
+  groupEnabled: z.boolean(),
+  groupChatId: z.string(),
   clearBotToken: z.boolean(),
   clearInboundToken: z.boolean(),
 })
@@ -48,6 +50,8 @@ const defaultValues: TelegramFormValues = {
   enabled: false,
   botToken: '',
   inboundToken: '',
+  groupEnabled: false,
+  groupChatId: '',
   clearBotToken: false,
   clearInboundToken: false,
 }
@@ -70,10 +74,13 @@ export function NotificationsForm() {
 
   useEffect(() => {
     if (!settings.data) return
+
     form.reset({
       enabled: settings.data.enabled,
       botToken: '',
       inboundToken: '',
+      groupEnabled: settings.data.group_enabled,
+      groupChatId: settings.data.group_chat_id,
       clearBotToken: false,
       clearInboundToken: false,
     })
@@ -100,6 +107,8 @@ export function NotificationsForm() {
       ...(data.inboundToken.trim()
         ? { inbound_token: data.inboundToken.trim() }
         : {}),
+      group_enabled: data.groupEnabled,
+      group_chat_id: data.groupChatId.trim(),
       ...(!data.botToken.trim() && data.clearBotToken
         ? { clear_bot_token: true }
         : {}),
@@ -119,10 +128,11 @@ export function NotificationsForm() {
             render={({ field }) => (
               <FormItem className='flex flex-row items-center justify-between rounded-lg border p-4'>
                 <div className='space-y-0.5'>
-                  <FormLabel className='text-base'>启用 Telegram 上报</FormLabel>
+                  <FormLabel className='text-base'>
+                    启用 Telegram 上报
+                  </FormLabel>
                   <FormDescription>
-                    外部消息传入后，系统会根据用户映射发送到对应的
-                    Telegram 账号。
+                    外部消息传入后，系统会发送到指定用户或配置好的 Telegram 群组。
                   </FormDescription>
                 </div>
                 <FormControl>
@@ -182,6 +192,53 @@ export function NotificationsForm() {
                   </FormControl>
                   <FormDescription>
                     调用消息入口时放在 Bearer Token 或 X-OV-Dash-Token。
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div className='space-y-4 rounded-lg border p-4'>
+            <FormField
+              control={form.control}
+              name='groupEnabled'
+              render={({ field }) => (
+                <FormItem className='flex flex-row items-center justify-between'>
+                  <div className='space-y-0.5'>
+                    <FormLabel className='text-base'>
+                      启用 Telegram 群组通知
+                    </FormLabel>
+                    <FormDescription>
+                      未指定用户的入站消息会发送到群组；指定用户时可用
+                      deliver_to_group 同时发送到群组。
+                    </FormDescription>
+                  </div>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='groupChatId'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>群组 Chat ID</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder='例如 -1001234567890'
+                      autoComplete='off'
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    把 Bot 拉进群组后填写群组或超级群 Chat ID，通常以 -100 开头。
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
