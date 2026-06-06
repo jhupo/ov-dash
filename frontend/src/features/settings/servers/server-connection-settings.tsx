@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -11,7 +11,6 @@ import {
   Loader2,
   LockKeyhole,
   Plus,
-  Server,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -26,7 +25,6 @@ import {
 } from '@/services/server-connections'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
@@ -51,6 +49,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 
 const formSchema = z.object({
   name: z.string().trim().min(1, '请输入名称。'),
@@ -101,18 +107,6 @@ export function ServerConnectionSettings() {
     refetchInterval: 15_000,
   })
 
-  const groupedItems = useMemo(() => {
-    return (query.data ?? []).reduce<Record<string, ServerConnection[]>>(
-      (groups, item) => {
-        const key = item.group_name || '默认'
-        groups[key] = groups[key] ?? []
-        groups[key].push(item)
-        return groups
-      },
-      {}
-    )
-  }, [query.data])
-
   const saveMutation = useMutation({
     mutationFn: saveServerConnection,
     onSuccess: async () => {
@@ -157,31 +151,41 @@ export function ServerConnectionSettings() {
       </div>
 
       {query.data?.length ? (
-        <div className='grid gap-3 lg:grid-cols-2'>
-          {Object.entries(groupedItems).map(([group, items]) =>
-            items.map((item) => (
-              <Card key={item.id}>
-                <CardContent className='p-4'>
-                  <div className='flex items-start justify-between gap-4'>
-                    <div className='min-w-0 space-y-2'>
-                      <div className='flex min-w-0 items-center gap-2'>
-                        <Server className='size-4 shrink-0 text-muted-foreground' />
-                        <span className='truncate font-semibold'>
-                          {item.name}
-                        </span>
-                        <Badge variant='secondary'>{group}</Badge>
-                      </div>
-                      <div className='grid gap-1 text-sm text-muted-foreground'>
-                        <span className='truncate'>
-                          {item.username}@{item.host}:{item.port}
-                        </span>
-                        <span className='truncate'>
-                          {item.region || '未设置地区'} · 到期{' '}
-                          {formatDate(item.expires_at)}
-                        </span>
-                      </div>
-                    </div>
-                    <div className='flex shrink-0 gap-1'>
+        <div className='overflow-hidden rounded-md border'>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>名称</TableHead>
+                <TableHead>主机</TableHead>
+                <TableHead>用户</TableHead>
+                <TableHead>认证</TableHead>
+                <TableHead>地区</TableHead>
+                <TableHead>到期</TableHead>
+                <TableHead>采集</TableHead>
+                <TableHead className='w-24 text-right'>操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {query.data.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell className='font-medium'>{item.name}</TableCell>
+                  <TableCell className='font-mono text-xs'>
+                    {item.host}:{item.port}
+                  </TableCell>
+                  <TableCell>{item.username}</TableCell>
+                  <TableCell>
+                    <CredentialBadge
+                      type={item.auth_type}
+                      active={item.has_password || item.has_private_key}
+                    />
+                  </TableCell>
+                  <TableCell>{item.region || '-'}</TableCell>
+                  <TableCell>{formatDate(item.expires_at)}</TableCell>
+                  <TableCell>
+                    <CollectBadge item={item} />
+                  </TableCell>
+                  <TableCell>
+                    <div className='flex justify-end gap-1'>
                       <Button
                         type='button'
                         variant='ghost'
@@ -205,18 +209,11 @@ export function ServerConnectionSettings() {
                         <Trash2 className='text-destructive' />
                       </Button>
                     </div>
-                  </div>
-                  <div className='mt-4 flex flex-wrap gap-2'>
-                    <CredentialBadge
-                      type={item.auth_type}
-                      active={item.has_password || item.has_private_key}
-                    />
-                    <CollectBadge item={item} />
-                  </div>
-                </CardContent>
-              </Card>
-            ))
-          )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </div>
       ) : (
         <div className='flex min-h-48 items-center justify-center rounded-md border border-dashed'>
@@ -364,7 +361,7 @@ function ServerConnectionDialog({
           >
             <section className='space-y-3'>
               <div className='flex items-center gap-2 text-sm font-medium'>
-                <Server className='size-4 text-muted-foreground' />
+                <FileKey2 className='size-4 text-muted-foreground' />
                 基础信息
               </div>
               <div className='grid gap-4 md:grid-cols-3'>
