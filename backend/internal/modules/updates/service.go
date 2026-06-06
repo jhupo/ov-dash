@@ -204,6 +204,8 @@ func (s *Service) startUpdater(ctx context.Context, version string) error {
 		"-v",
 		s.cfg.Update.WorkDir + ":" + s.cfg.Update.WorkDir,
 		"-v",
+		"/root/.netrc:/root/.netrc:ro",
+		"-v",
 		"/var/run/docker.sock:/var/run/docker.sock",
 		"-w",
 		s.cfg.Update.WorkDir,
