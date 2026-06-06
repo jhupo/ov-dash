@@ -61,6 +61,39 @@ func (c *Collector) Collect(ctx context.Context, id string) error {
 	return c.repository.SaveMetric(ctx, metric)
 }
 
+func (c *Collector) Install(ctx context.Context, id string) error {
+	item, err := c.repository.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
+		return err
+	}
+	if err := c.installAgent(ctx, item); err != nil {
+		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+		return err
+	}
+	metric, err := c.collectFromAgent(ctx, item)
+	if err != nil {
+		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+		return err
+	}
+	return c.repository.SaveAgentMetric(ctx, metric)
+}
+
+func (c *Collector) RunCommand(ctx context.Context, id string, command string) (string, error) {
+	item, err := c.repository.Get(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	client, err := c.connect(ctx, item)
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+	return outputSSH(ctx, client, command)
+}
+
 func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error) {
 	if err := c.installAgent(ctx, item); err != nil {
 		return Metric{}, err
@@ -75,7 +108,7 @@ func (c *Collector) installAgent(ctx context.Context, item Connection) error {
 	}
 	defer client.Close()
 
-	if err := runSSH(ctx, client, installCommand(item.AgentPort)); err != nil {
+	if err := runSSH(ctx, client, privilegedInstallCommand(item.AgentPort)); err != nil {
 		return err
 	}
 	return c.waitForAgent(ctx, item)
@@ -100,28 +133,27 @@ func (c *Collector) waitForAgent(ctx context.Context, item Connection) error {
 }
 
 func (c *Collector) collectFromAgent(ctx context.Context, item Connection) (Metric, error) {
-	port := item.AgentPort
-	if port == 0 {
-		port = 19087
-	}
-
-	start := time.Now()
 	conn, err := c.dialAgent(ctx, item)
 	if err != nil {
 		return Metric{}, err
 	}
 	defer conn.Close()
-	latencyMS := float64(time.Since(start).Microseconds()) / 1000
+	return c.collectFromAgentConn(ctx, item, conn, bufio.NewReader(conn))
+}
+
+func (c *Collector) collectFromAgentConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (Metric, error) {
+	start := time.Now()
 
 	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
 	if _, err := io.WriteString(conn, "metrics\n"); err != nil {
 		return Metric{}, err
 	}
 
-	output, err := bufio.NewReader(conn).ReadString('\n')
+	output, err := reader.ReadString('\n')
 	if err != nil {
 		return Metric{}, err
 	}
+	latencyMS := float64(time.Since(start).Microseconds()) / 1000
 
 	var payload agentPayload
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
@@ -151,27 +183,26 @@ func (c *Collector) CollectAgentLoop(ctx context.Context, id string) error {
 		return err
 	}
 
-	metric, err := c.collectFromAgent(ctx, item)
+	conn, err := c.dialAgent(ctx, item)
 	if err != nil {
 		if err := c.installAgent(ctx, item); err != nil {
 			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
 			return err
 		}
-		metric, err = c.collectFromAgent(ctx, item)
-		if err != nil {
-			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-			return err
-		}
+		conn, err = c.dialAgent(ctx, item)
 	}
-	if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
+	if err != nil {
+		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
 		return err
 	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	for {
-		metric, err := c.collectFromAgent(ctx, item)
+		metric, err := c.collectFromAgentConn(ctx, item, conn, reader)
 		if err != nil {
 			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
 			return err
@@ -189,6 +220,9 @@ func (c *Collector) CollectAgentLoop(ctx context.Context, id string) error {
 }
 
 func (c *Collector) connect(ctx context.Context, item Connection) (*ssh.Client, error) {
+	if err := keyAuthError(item); err != nil {
+		return nil, err
+	}
 	config := &ssh.ClientConfig{
 		User:            item.Username,
 		Auth:            authMethods(item),
@@ -240,6 +274,20 @@ func authMethods(item Connection) []ssh.AuthMethod {
 		methods = append(methods, ssh.Password(item.Password))
 	}
 	return methods
+}
+
+func keyAuthError(item Connection) error {
+	if item.AuthType != "key" || strings.TrimSpace(item.PrivateKey) == "" {
+		return nil
+	}
+	_, err := ssh.ParsePrivateKey([]byte(item.PrivateKey))
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "passphrase") {
+		return errors.New("private key passphrase is not supported yet")
+	}
+	return fmt.Errorf("invalid private key: %w", err)
 }
 
 func runSSH(ctx context.Context, client *ssh.Client, command string) error {
@@ -310,7 +358,13 @@ OVDASH_SERVICE
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl enable --now ovdash-agent.service >/dev/null 2>&1 || true
 systemctl restart ovdash-agent.service >/dev/null 2>&1 || true
-`, agentPath, agentScript, port)
+	`, agentPath, agentScript, port)
+}
+
+func privilegedInstallCommand(port int) string {
+	command := installCommand(port)
+	escaped := strings.ReplaceAll(command, "'", "'\"'\"'")
+	return fmt.Sprintf("if [ \"$(id -u)\" = \"0\" ]; then sh -c '%s'; elif command -v sudo >/dev/null 2>&1; then sudo -n sh -c '%s'; else echo 'root or passwordless sudo is required to install ovdash-agent' >&2; exit 1; fi", escaped, escaped)
 }
 
 func trimError(err error) string {
@@ -322,16 +376,16 @@ func trimError(err error) string {
 }
 
 type agentPayload struct {
-	CPUPercent      float64 `json:"cpu_percent"`
-	CPUCores        int64   `json:"cpu_cores"`
-	MemoryUsedBytes int64   `json:"memory_used_bytes"`
-	MemoryTotalBytes int64  `json:"memory_total_bytes"`
-	SwapUsedBytes    int64  `json:"swap_used_bytes"`
-	SwapTotalBytes   int64  `json:"swap_total_bytes"`
-	DiskUsedBytes    int64  `json:"disk_used_bytes"`
-	DiskTotalBytes   int64  `json:"disk_total_bytes"`
-	NetworkRXBytes   int64  `json:"network_rx_bytes"`
-	NetworkTXBytes   int64  `json:"network_tx_bytes"`
+	CPUPercent       float64 `json:"cpu_percent"`
+	CPUCores         int64   `json:"cpu_cores"`
+	MemoryUsedBytes  int64   `json:"memory_used_bytes"`
+	MemoryTotalBytes int64   `json:"memory_total_bytes"`
+	SwapUsedBytes    int64   `json:"swap_used_bytes"`
+	SwapTotalBytes   int64   `json:"swap_total_bytes"`
+	DiskUsedBytes    int64   `json:"disk_used_bytes"`
+	DiskTotalBytes   int64   `json:"disk_total_bytes"`
+	NetworkRXBytes   int64   `json:"network_rx_bytes"`
+	NetworkTXBytes   int64   `json:"network_tx_bytes"`
 	NetworkRXRateBps float64 `json:"network_rx_rate_bps"`
 	NetworkTXRateBps float64 `json:"network_tx_rate_bps"`
 	Load1            float64 `json:"load1"`
@@ -355,9 +409,9 @@ func (p agentPayload) metric(serverID string, collectedAt time.Time) Metric {
 	_ = json.Unmarshal(encoded, &raw)
 	return Metric{
 		ServerID:         serverID,
-		CPUPercent:      p.CPUPercent,
-		CPUCores:        p.CPUCores,
-		MemoryUsedBytes: p.MemoryUsedBytes,
+		CPUPercent:       p.CPUPercent,
+		CPUCores:         p.CPUCores,
+		MemoryUsedBytes:  p.MemoryUsedBytes,
 		MemoryTotalBytes: p.MemoryTotalBytes,
 		SwapUsedBytes:    p.SwapUsedBytes,
 		SwapTotalBytes:   p.SwapTotalBytes,

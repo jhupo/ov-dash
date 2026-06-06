@@ -35,7 +35,7 @@ BEGIN {
   split(a, x, " "); split(b, y, " ");
   idle1=x[5]+x[6]; idle2=y[5]+y[6];
   total1=0; total2=0;
-  for (i=2; i<=NF; i++) { total1+=x[i]; total2+=y[i]; }
+  for (i=2; i<=length(x); i++) { total1+=x[i]; total2+=y[i]; }
   dt=total2-total1; di=idle2-idle1;
   if (dt <= 0) print 0; else printf "%.2f", (dt-di)*100/dt;
 }')
@@ -89,7 +89,7 @@ printf '\n'
 }
 
 serve_with_socat() {
-  exec socat TCP-LISTEN:"$port",reuseaddr,fork SYSTEM:"/usr/local/bin/ovdash-agent once"
+  exec socat TCP-LISTEN:"$port",reuseaddr,fork SYSTEM:"/usr/local/bin/ovdash-agent stream"
 }
 
 serve_with_nc() {
@@ -100,6 +100,13 @@ serve_with_nc() {
 
 if [ "$mode" = "once" ]; then
   collect_once
+  exit 0
+fi
+
+if [ "$mode" = "stream" ]; then
+  while IFS= read -r _; do
+    collect_once
+  done
   exit 0
 fi
 

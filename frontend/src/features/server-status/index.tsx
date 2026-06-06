@@ -817,7 +817,7 @@ function buildRows(metric: ServerMetric | null): MetricRow[] {
   return [
     {
       label: 'CPU',
-      value: `${metric.cpu_percent.toFixed(0)}%`,
+      value: formatPercent(metric.cpu_percent),
       percent: metric.cpu_percent,
       tone: tone(metric.cpu_percent),
     },
@@ -851,6 +851,11 @@ function tone(value: number): MetricRow['tone'] {
   if (value >= 90) return 'red'
   if (value >= 60) return 'yellow'
   return 'green'
+}
+
+function formatPercent(value: number) {
+  if (value > 0 && value < 10) return `${value.toFixed(1)}%`
+  return `${value.toFixed(0)}%`
 }
 
 function memoryText(metric: ServerMetric | null) {

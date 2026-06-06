@@ -10,7 +10,10 @@ import {
   KeyRound,
   Loader2,
   LockKeyhole,
+  MoreHorizontal,
   Plus,
+  RefreshCw,
+  Terminal,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -19,7 +22,9 @@ import { toast } from 'sonner'
 import {
   deleteServerConnection,
   listServerConnections,
+  runServerCommand,
   saveServerConnection,
+  updateServerAgent,
   type ServerAuthType,
   type ServerConnection,
 } from '@/services/server-connections'
@@ -43,6 +48,13 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -57,6 +69,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Textarea } from '@/components/ui/textarea'
 
 const formSchema = z.object({
   name: z.string().trim().min(1, '请输入名称。'),
@@ -98,6 +111,9 @@ export function ServerConnectionSettings() {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<ServerConnection | null>(null)
+  const [terminalServer, setTerminalServer] = useState<ServerConnection | null>(
+    null
+  )
 
   const query = useQuery({
     queryKey: ['server-connections'],
@@ -126,6 +142,17 @@ export function ServerConnectionSettings() {
     },
     onError: () => {
       toast.error('服务器删除失败')
+    },
+  })
+
+  const updateAgentMutation = useMutation({
+    mutationFn: updateServerAgent,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['server-connections'] })
+      toast.success('Agent 已更新')
+    },
+    onError: () => {
+      toast.error('Agent 更新失败')
     },
   })
 
@@ -181,30 +208,49 @@ export function ServerConnectionSettings() {
                     <CollectBadge item={item} />
                   </TableCell>
                   <TableCell>
-                    <div className='flex justify-end gap-1'>
-                      <Button
-                        type='button'
-                        variant='ghost'
-                        size='icon'
-                        onClick={() => {
-                          setEditing(item)
-                          setOpen(true)
-                        }}
-                        aria-label='编辑服务器'
-                      >
-                        <Edit3 />
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='ghost'
-                        size='icon'
-                        disabled={deleteMutation.isPending}
-                        onClick={() => deleteMutation.mutate(item.id)}
-                        aria-label='删除服务器'
-                      >
-                        <Trash2 className='text-destructive' />
-                      </Button>
-                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon'
+                          aria-label='服务器操作'
+                        >
+                          <MoreHorizontal />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align='end' className='w-36'>
+                        <DropdownMenuItem onClick={() => setTerminalServer(item)}>
+                          <Terminal />
+                          连接
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={updateAgentMutation.isPending}
+                          onClick={() => updateAgentMutation.mutate(item.id)}
+                        >
+                          <RefreshCw />
+                          更新 Agent
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setEditing(item)
+                            setOpen(true)
+                          }}
+                        >
+                          <Edit3 />
+                          编辑
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant='destructive'
+                          disabled={deleteMutation.isPending}
+                          onClick={() => deleteMutation.mutate(item.id)}
+                        >
+                          <Trash2 />
+                          删除
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}
@@ -249,6 +295,12 @@ export function ServerConnectionSettings() {
           })
         }}
       />
+      <ServerTerminalDialog
+        server={terminalServer}
+        onOpenChange={(open) => {
+          if (!open) setTerminalServer(null)
+        }}
+      />
     </div>
   )
 }
@@ -290,6 +342,85 @@ function CollectBadge({ item }: { item: ServerConnection }) {
     return <Badge variant='secondary'>待采集</Badge>
   }
   return <Badge variant='secondary'>等待采集</Badge>
+}
+
+function ServerTerminalDialog({
+  server,
+  onOpenChange,
+}: {
+  server: ServerConnection | null
+  onOpenChange: (open: boolean) => void
+}) {
+  const [command, setCommand] = useState('pwd')
+  const [output, setOutput] = useState('')
+  const commandMutation = useMutation({
+    mutationFn: (value: string) => runServerCommand(server!.id, value),
+    onSuccess: (data, value) => {
+      const text = data.output || data.error || ''
+      setOutput((current) =>
+        current + '$ ' + value + '\n' + text + (text.endsWith('\n') ? '' : '\n')
+      )
+    },
+    onError: (error, value) => {
+      setOutput((current) => current + '$ ' + value + '\n' + String(error) + '\n')
+    },
+  })
+
+  useEffect(() => {
+    if (server) {
+      setCommand('pwd')
+      setOutput('')
+    }
+  }, [server])
+
+  function runCommand() {
+    const value = command.trim()
+    if (!value || !server) return
+    commandMutation.mutate(value)
+  }
+
+  return (
+    <Dialog open={!!server} onOpenChange={onOpenChange}>
+      <DialogContent className='max-h-[92vh] overflow-y-auto sm:max-w-4xl'>
+        <DialogHeader>
+          <DialogTitle>SSH - {server?.connection_hint}</DialogTitle>
+        </DialogHeader>
+        <div className='space-y-3'>
+          <Textarea
+            readOnly
+            value={output || '输入命令后会在这里显示输出。'}
+            className='min-h-[360px] resize-none font-mono text-xs'
+          />
+          <div className='flex gap-2'>
+            <Input
+              value={command}
+              onChange={(event) => setCommand(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  runCommand()
+                }
+              }}
+              className='font-mono'
+              placeholder='输入命令，例如：uname -a'
+            />
+            <Button
+              type='button'
+              disabled={commandMutation.isPending}
+              onClick={runCommand}
+            >
+              {commandMutation.isPending ? (
+                <Loader2 className='animate-spin' />
+              ) : (
+                <Terminal />
+              )}
+              执行
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 function ServerConnectionDialog({

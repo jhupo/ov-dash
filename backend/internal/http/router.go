@@ -34,7 +34,11 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		proxySettings := NewProxySettingsHandler(runtime.Proxy)
-		serverConnections := NewServerConnectionsHandler(servers.NewService(servers.NewRepository(runtime.DB)))
+		serverRepository := servers.NewRepository(runtime.DB)
+		serverConnections := NewServerConnectionsHandler(
+			servers.NewService(serverRepository),
+			servers.NewCollector(serverRepository),
+		)
 
 		r.Get("/health", health.Readiness)
 		r.Get("/platform", NewPlatformHandler(runtime).Status)
@@ -49,6 +53,8 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 		r.Get("/server-connections", serverConnections.List)
 		r.Post("/server-connections", serverConnections.Save)
 		r.Get("/server-connections/{id}/metrics", serverConnections.Metrics)
+		r.Post("/server-connections/{id}/agent/update", serverConnections.UpdateAgent)
+		r.Post("/server-connections/{id}/ssh/command", serverConnections.RunCommand)
 		r.Put("/server-connections/{id}", serverConnections.Save)
 		r.Delete("/server-connections/{id}", serverConnections.Delete)
 	})

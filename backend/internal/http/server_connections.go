@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,27 +14,28 @@ import (
 )
 
 type ServerConnectionsHandler struct {
-	service *servers.Service
+	service   *servers.Service
+	collector *servers.Collector
 }
 
-func NewServerConnectionsHandler(service *servers.Service) *ServerConnectionsHandler {
-	return &ServerConnectionsHandler{service: service}
+func NewServerConnectionsHandler(service *servers.Service, collector *servers.Collector) *ServerConnectionsHandler {
+	return &ServerConnectionsHandler{service: service, collector: collector}
 }
 
 type saveServerConnectionRequest struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	GroupName   string  `json:"group_name"`
-	Region      string  `json:"region"`
-	Host        string  `json:"host"`
-	Port        int     `json:"port"`
-	Username    string  `json:"username"`
-	AuthType    string  `json:"auth_type"`
-	Password    *string `json:"password"`
-	PrivateKey  *string `json:"private_key"`
-	ExpiresAt   *string `json:"expires_at"`
-	CollectInterval int `json:"collect_interval_seconds"`
-	ClearSecret bool    `json:"clear_secret"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	GroupName       string  `json:"group_name"`
+	Region          string  `json:"region"`
+	Host            string  `json:"host"`
+	Port            int     `json:"port"`
+	Username        string  `json:"username"`
+	AuthType        string  `json:"auth_type"`
+	Password        *string `json:"password"`
+	PrivateKey      *string `json:"private_key"`
+	ExpiresAt       *string `json:"expires_at"`
+	CollectInterval int     `json:"collect_interval_seconds"`
+	ClearSecret     bool    `json:"clear_secret"`
 }
 
 func (h *ServerConnectionsHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -61,19 +63,19 @@ func (h *ServerConnectionsHandler) Save(w http.ResponseWriter, r *http.Request) 
 	}
 
 	item, err := h.service.Save(r.Context(), servers.SaveInput{
-		ID:          payload.ID,
-		Name:        payload.Name,
-		GroupName:   payload.GroupName,
-		Region:      payload.Region,
-		Host:        payload.Host,
-		Port:        payload.Port,
-		Username:    payload.Username,
-		AuthType:    payload.AuthType,
-		Password:    payload.Password,
-		PrivateKey:  payload.PrivateKey,
-		ExpiresAt:   expiresAt,
+		ID:              payload.ID,
+		Name:            payload.Name,
+		GroupName:       payload.GroupName,
+		Region:          payload.Region,
+		Host:            payload.Host,
+		Port:            payload.Port,
+		Username:        payload.Username,
+		AuthType:        payload.AuthType,
+		Password:        payload.Password,
+		PrivateKey:      payload.PrivateKey,
+		ExpiresAt:       expiresAt,
 		CollectInterval: payload.CollectInterval,
-		ClearSecret: payload.ClearSecret,
+		ClearSecret:     payload.ClearSecret,
 	})
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -111,6 +113,44 @@ func (h *ServerConnectionsHandler) Metrics(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+type serverCommandRequest struct {
+	Command string `json:"command"`
+}
+
+func (h *ServerConnectionsHandler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	if err := h.collector.Install(ctx, chi.URLParam(r, "id")); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *ServerConnectionsHandler) RunCommand(w http.ResponseWriter, r *http.Request) {
+	var payload serverCommandRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	command := strings.TrimSpace(payload.Command)
+	if command == "" || len(command) > 2000 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_command"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	output, err := h.collector.RunCommand(ctx, chi.URLParam(r, "id"), command)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":  err.Error(),
+			"output": output,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": output})
 }
 
 func (h *ServerConnectionsHandler) Delete(w http.ResponseWriter, r *http.Request) {

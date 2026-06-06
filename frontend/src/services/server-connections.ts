@@ -98,6 +98,26 @@ export async function deleteServerConnection(id: string): Promise<void> {
   await httpClient.delete(`/server-connections/${id}`)
 }
 
+export async function updateServerAgent(id: string): Promise<void> {
+  await httpClient.post(`/server-connections/${id}/agent/update`)
+}
+
+type ServerCommandResponse = {
+  output?: string
+  error?: string
+}
+
+export async function runServerCommand(
+  id: string,
+  command: string
+): Promise<ServerCommandResponse> {
+  const response = await httpClient.post<ServerCommandResponse>(
+    `/server-connections/${id}/ssh/command`,
+    { command }
+  )
+  return response.data
+}
+
 type MetricsResponse = {
   items: ServerMetric[]
 }
