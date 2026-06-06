@@ -9,12 +9,13 @@ import (
 )
 
 type Config struct {
-	App      AppConfig
-	HTTP     HTTPConfig
-	Postgres PostgresConfig
-	Redis    RedisConfig
-	Worker   WorkerConfig
-	Python   PythonConfig
+	App        AppConfig
+	HTTP       HTTPConfig
+	Postgres   PostgresConfig
+	Redis      RedisConfig
+	Worker     WorkerConfig
+	Python     PythonConfig
+	Migrations MigrationsConfig
 }
 
 type AppConfig struct {
@@ -61,6 +62,10 @@ type PythonConfig struct {
 	ScriptsDir string
 }
 
+type MigrationsConfig struct {
+	Dir string
+}
+
 func Load() Config {
 	return Config{
 		App: AppConfig{
@@ -96,6 +101,9 @@ func Load() Config {
 		Python: PythonConfig{
 			Bin:        env("PYTHON_BIN", "python3"),
 			ScriptsDir: env("PYTHON_SCRIPTS_DIR", "./scripts"),
+		},
+		Migrations: MigrationsConfig{
+			Dir: env("MIGRATIONS_DIR", "/migrations"),
 		},
 	}
 }

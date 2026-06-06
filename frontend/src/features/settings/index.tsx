@@ -1,5 +1,13 @@
 import { Outlet, useLocation } from '@tanstack/react-router'
-import { Bell, CircleHelp, Monitor, Palette, Route, Wrench } from 'lucide-react'
+import {
+  Bell,
+  CircleHelp,
+  Monitor,
+  Palette,
+  Route,
+  Server,
+  Wrench,
+} from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
@@ -13,6 +21,11 @@ const systemNavItems = [
     title: '代理',
     href: '/settings/proxy',
     icon: <Route size={18} />,
+  },
+  {
+    title: '服务器',
+    href: '/settings/servers',
+    icon: <Server size={18} />,
   },
   {
     title: '帮助中心',
@@ -47,7 +60,9 @@ const profileNavItems = [
 export function Settings() {
   const pathname = useLocation({ select: (location) => location.pathname })
   const isSystemSettings =
-    pathname === '/settings/proxy' || pathname === '/settings/help-center'
+    pathname === '/settings/proxy' ||
+    pathname === '/settings/servers' ||
+    pathname === '/settings/help-center'
 
   return (
     <>

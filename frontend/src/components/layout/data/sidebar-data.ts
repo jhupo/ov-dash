@@ -65,6 +65,11 @@ export const sidebarData: SidebarData = {
               icon: Route,
             },
             {
+              title: '服务器',
+              url: '/settings/servers',
+              icon: Server,
+            },
+            {
               title: '帮助中心',
               url: '/settings/help-center',
               icon: HelpCircle,

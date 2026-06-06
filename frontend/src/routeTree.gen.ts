@@ -35,6 +35,8 @@ import { Route as ClerkAuthenticatedUserManagementRouteImport } from './routes/c
 import { Route as ClerkauthSignUpRouteImport } from './routes/clerk/(auth)/sign-up'
 import { Route as ClerkauthSignInRouteImport } from './routes/clerk/(auth)/sign-in'
 import { Route as AuthenticatedSettingsNotificationsRouteImport } from './routes/_authenticated/settings/notifications'
+import { Route as AuthenticatedSettingsServersRouteImport } from './routes/_authenticated/settings/servers'
+import { Route as AuthenticatedServerStatusIndexRouteImport } from './routes/_authenticated/server-status/index'
 import { Route as AuthenticatedSettingsHelpCenterRouteImport } from './routes/_authenticated/settings/help-center'
 import { Route as AuthenticatedSettingsProxyRouteImport } from './routes/_authenticated/settings/proxy'
 import { Route as AuthenticatedSettingsDisplayRouteImport } from './routes/_authenticated/settings/display'
@@ -136,6 +138,12 @@ const AuthenticatedSettingsIndexRoute =
     path: '/',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedServerStatusIndexRoute =
+  AuthenticatedServerStatusIndexRouteImport.update({
+    id: '/server-status/',
+    path: '/server-status/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedHelpCenterIndexRoute =
   AuthenticatedHelpCenterIndexRouteImport.update({
     id: '/help-center/',
@@ -178,6 +186,12 @@ const AuthenticatedSettingsProxyRoute =
   AuthenticatedSettingsProxyRouteImport.update({
     id: '/proxy',
     path: '/proxy',
+    getParentRoute: () => AuthenticatedSettingsRouteRoute,
+  } as any)
+const AuthenticatedSettingsServersRoute =
+  AuthenticatedSettingsServersRouteImport.update({
+    id: '/servers',
+    path: '/servers',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
 const AuthenticatedSettingsHelpCenterRoute =
@@ -232,6 +246,7 @@ export interface FileRoutesByFullPath {
   '/settings/help-center': typeof AuthenticatedSettingsHelpCenterRoute
   '/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
   '/settings/proxy': typeof AuthenticatedSettingsProxyRoute
+  '/settings/servers': typeof AuthenticatedSettingsServersRoute
   '/clerk/sign-in': typeof ClerkauthSignInRoute
   '/clerk/sign-up': typeof ClerkauthSignUpRoute
   '/clerk/user-management': typeof ClerkAuthenticatedUserManagementRoute
@@ -239,6 +254,7 @@ export interface FileRoutesByFullPath {
   '/chats/': typeof AuthenticatedChatsIndexRoute
   '/help-center/': typeof AuthenticatedHelpCenterIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
+  '/server-status/': typeof AuthenticatedServerStatusIndexRoute
   '/tasks/': typeof AuthenticatedTasksIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
 }
@@ -262,6 +278,7 @@ export interface FileRoutesByTo {
   '/settings/help-center': typeof AuthenticatedSettingsHelpCenterRoute
   '/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
   '/settings/proxy': typeof AuthenticatedSettingsProxyRoute
+  '/settings/servers': typeof AuthenticatedSettingsServersRoute
   '/clerk/sign-in': typeof ClerkauthSignInRoute
   '/clerk/sign-up': typeof ClerkauthSignUpRoute
   '/clerk/user-management': typeof ClerkAuthenticatedUserManagementRoute
@@ -269,6 +286,7 @@ export interface FileRoutesByTo {
   '/chats': typeof AuthenticatedChatsIndexRoute
   '/help-center': typeof AuthenticatedHelpCenterIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
+  '/server-status': typeof AuthenticatedServerStatusIndexRoute
   '/tasks': typeof AuthenticatedTasksIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
 }
@@ -297,6 +315,7 @@ export interface FileRoutesById {
   '/_authenticated/settings/help-center': typeof AuthenticatedSettingsHelpCenterRoute
   '/_authenticated/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
   '/_authenticated/settings/proxy': typeof AuthenticatedSettingsProxyRoute
+  '/_authenticated/settings/servers': typeof AuthenticatedSettingsServersRoute
   '/clerk/(auth)/sign-in': typeof ClerkauthSignInRoute
   '/clerk/(auth)/sign-up': typeof ClerkauthSignUpRoute
   '/clerk/_authenticated/user-management': typeof ClerkAuthenticatedUserManagementRoute
@@ -304,6 +323,7 @@ export interface FileRoutesById {
   '/_authenticated/chats/': typeof AuthenticatedChatsIndexRoute
   '/_authenticated/help-center/': typeof AuthenticatedHelpCenterIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
+  '/_authenticated/server-status/': typeof AuthenticatedServerStatusIndexRoute
   '/_authenticated/tasks/': typeof AuthenticatedTasksIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
 }
@@ -330,6 +350,7 @@ export interface FileRouteTypes {
     | '/settings/help-center'
     | '/settings/notifications'
     | '/settings/proxy'
+    | '/settings/servers'
     | '/clerk/sign-in'
     | '/clerk/sign-up'
     | '/clerk/user-management'
@@ -337,6 +358,7 @@ export interface FileRouteTypes {
     | '/chats/'
     | '/help-center/'
     | '/settings/'
+    | '/server-status/'
     | '/tasks/'
     | '/users/'
   fileRoutesByTo: FileRoutesByTo
@@ -360,6 +382,7 @@ export interface FileRouteTypes {
     | '/settings/help-center'
     | '/settings/notifications'
     | '/settings/proxy'
+    | '/settings/servers'
     | '/clerk/sign-in'
     | '/clerk/sign-up'
     | '/clerk/user-management'
@@ -367,6 +390,7 @@ export interface FileRouteTypes {
     | '/chats'
     | '/help-center'
     | '/settings'
+    | '/server-status'
     | '/tasks'
     | '/users'
   id:
@@ -394,6 +418,7 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/help-center'
     | '/_authenticated/settings/notifications'
     | '/_authenticated/settings/proxy'
+    | '/_authenticated/settings/servers'
     | '/clerk/(auth)/sign-in'
     | '/clerk/(auth)/sign-up'
     | '/clerk/_authenticated/user-management'
@@ -401,6 +426,7 @@ export interface FileRouteTypes {
     | '/_authenticated/chats/'
     | '/_authenticated/help-center/'
     | '/_authenticated/settings/'
+    | '/_authenticated/server-status/'
     | '/_authenticated/tasks/'
     | '/_authenticated/users/'
   fileRoutesById: FileRoutesById
@@ -562,6 +588,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedHelpCenterIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/server-status/': {
+      id: '/_authenticated/server-status/'
+      path: '/server-status'
+      fullPath: '/server-status/'
+      preLoaderRoute: typeof AuthenticatedServerStatusIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/chats/': {
       id: '/_authenticated/chats/'
       path: '/chats'
@@ -611,6 +644,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsProxyRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/settings/servers': {
+      id: '/_authenticated/settings/servers'
+      path: '/servers'
+      fullPath: '/settings/servers'
+      preLoaderRoute: typeof AuthenticatedSettingsServersRouteImport
+      parentRoute: typeof AuthenticatedSettingsRouteRoute
+    }
     '/_authenticated/settings/help-center': {
       id: '/_authenticated/settings/help-center'
       path: '/help-center'
@@ -656,6 +696,7 @@ interface AuthenticatedSettingsRouteRouteChildren {
   AuthenticatedSettingsNotificationsRoute: typeof AuthenticatedSettingsNotificationsRoute
   AuthenticatedSettingsHelpCenterRoute: typeof AuthenticatedSettingsHelpCenterRoute
   AuthenticatedSettingsProxyRoute: typeof AuthenticatedSettingsProxyRoute
+  AuthenticatedSettingsServersRoute: typeof AuthenticatedSettingsServersRoute
   AuthenticatedSettingsIndexRoute: typeof AuthenticatedSettingsIndexRoute
 }
 
@@ -668,6 +709,7 @@ const AuthenticatedSettingsRouteRouteChildren: AuthenticatedSettingsRouteRouteCh
       AuthenticatedSettingsNotificationsRoute,
     AuthenticatedSettingsHelpCenterRoute: AuthenticatedSettingsHelpCenterRoute,
     AuthenticatedSettingsProxyRoute: AuthenticatedSettingsProxyRoute,
+    AuthenticatedSettingsServersRoute: AuthenticatedSettingsServersRoute,
     AuthenticatedSettingsIndexRoute: AuthenticatedSettingsIndexRoute,
   }
 
@@ -683,6 +725,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedAppsIndexRoute: typeof AuthenticatedAppsIndexRoute
   AuthenticatedChatsIndexRoute: typeof AuthenticatedChatsIndexRoute
   AuthenticatedHelpCenterIndexRoute: typeof AuthenticatedHelpCenterIndexRoute
+  AuthenticatedServerStatusIndexRoute: typeof AuthenticatedServerStatusIndexRoute
   AuthenticatedTasksIndexRoute: typeof AuthenticatedTasksIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
 }
@@ -694,6 +737,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAppsIndexRoute: AuthenticatedAppsIndexRoute,
   AuthenticatedChatsIndexRoute: AuthenticatedChatsIndexRoute,
   AuthenticatedHelpCenterIndexRoute: AuthenticatedHelpCenterIndexRoute,
+  AuthenticatedServerStatusIndexRoute: AuthenticatedServerStatusIndexRoute,
   AuthenticatedTasksIndexRoute: AuthenticatedTasksIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,
 }

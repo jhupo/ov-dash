@@ -8,6 +8,7 @@ import (
 	"ov-dash/backend/internal/modules/apps"
 	"ov-dash/backend/internal/modules/chats"
 	"ov-dash/backend/internal/modules/dashboard"
+	"ov-dash/backend/internal/modules/servers"
 	"ov-dash/backend/internal/modules/tasks"
 	"ov-dash/backend/internal/modules/users"
 	"ov-dash/backend/internal/platform"
@@ -33,6 +34,7 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		proxySettings := NewProxySettingsHandler(runtime.Proxy)
+		serverConnections := NewServerConnectionsHandler(servers.NewService(servers.NewRepository(runtime.DB)))
 
 		r.Get("/health", health.Readiness)
 		r.Get("/platform", NewPlatformHandler(runtime).Status)
@@ -44,6 +46,10 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 		r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(runtime.DB))).ListConversations)
 		r.Get("/proxy-settings", proxySettings.Get)
 		r.Put("/proxy-settings", proxySettings.Update)
+		r.Get("/server-connections", serverConnections.List)
+		r.Post("/server-connections", serverConnections.Save)
+		r.Put("/server-connections/{id}", serverConnections.Save)
+		r.Delete("/server-connections/{id}", serverConnections.Delete)
 	})
 
 	return r

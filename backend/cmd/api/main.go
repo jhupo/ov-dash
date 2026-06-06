@@ -29,6 +29,10 @@ func main() {
 	}
 	defer runtime.Close()
 
+	if err := runtime.Migrations.ApplyDir(ctx, cfg.Migrations.Dir); err != nil {
+		runtime.Logger.Fatal("apply migrations", zap.Error(err))
+	}
+
 	router := apphttp.NewRouter(runtime)
 
 	server := &http.Server{
