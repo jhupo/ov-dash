@@ -1,5 +1,7 @@
-import { useNavigate, useLocation } from '@tanstack/react-router'
+import { useLocation, useNavigate } from '@tanstack/react-router'
+import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
+import { logout } from '@/services/auth'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
 interface SignOutDialogProps {
@@ -12,13 +14,17 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
   const location = useLocation()
   const { auth } = useAuthStore()
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    try {
+      await logout()
+    } catch {
+      toast.error('退出接口请求失败，已清除本地登录状态')
+    }
+
     auth.reset()
-    // Preserve current location for redirect after sign-in
-    const currentPath = location.href
     navigate({
       to: '/sign-in',
-      search: { redirect: currentPath },
+      search: { redirect: location.href },
       replace: true,
     })
   }
@@ -28,7 +34,7 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
       open={open}
       onOpenChange={onOpenChange}
       title='退出登录'
-      desc='确定要退出登录吗？再次访问账号时需要重新登录。'
+      desc='确定要退出当前账号吗？再次访问后台需要重新登录。'
       confirmText='退出登录'
       destructive
       handleConfirm={handleSignOut}

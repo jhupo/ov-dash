@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { BadgeCheck, ChevronsUpDown, LogOut } from 'lucide-react'
 import useDialogState from '@/hooks/use-dialog-state'
+import { useAuthStore } from '@/stores/auth-store'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
   DropdownMenu,
@@ -27,9 +28,19 @@ type NavUserProps = {
   }
 }
 
+function getInitials(value: string) {
+  return value.slice(0, 2).toUpperCase()
+}
+
 export function NavUser({ user }: NavUserProps) {
   const { isMobile } = useSidebar()
   const [open, setOpen] = useDialogState()
+  const authUser = useAuthStore((state) => state.auth.user)
+  const displayUser = {
+    name: authUser?.name || authUser?.email || user.name,
+    email: authUser?.email || user.email,
+    avatar: authUser?.avatar || user.avatar,
+  }
 
   return (
     <>
@@ -42,12 +53,16 @@ export function NavUser({ user }: NavUserProps) {
                 className='data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground'
               >
                 <Avatar className='h-8 w-8 rounded-lg'>
-                  <AvatarImage src={user.avatar} alt={user.name} />
-                  <AvatarFallback className='rounded-lg'>SN</AvatarFallback>
+                  <AvatarImage src={displayUser.avatar} alt={displayUser.name} />
+                  <AvatarFallback className='rounded-lg'>
+                    {getInitials(displayUser.name)}
+                  </AvatarFallback>
                 </Avatar>
                 <div className='grid flex-1 text-start text-sm leading-tight'>
-                  <span className='truncate font-semibold'>{user.name}</span>
-                  <span className='truncate text-xs'>{user.email}</span>
+                  <span className='truncate font-semibold'>
+                    {displayUser.name}
+                  </span>
+                  <span className='truncate text-xs'>{displayUser.email}</span>
                 </div>
                 <ChevronsUpDown className='ms-auto size-4' />
               </SidebarMenuButton>
@@ -61,12 +76,19 @@ export function NavUser({ user }: NavUserProps) {
               <DropdownMenuLabel className='p-0 font-normal'>
                 <div className='flex items-center gap-2 px-1 py-1.5 text-start text-sm'>
                   <Avatar className='h-8 w-8 rounded-lg'>
-                    <AvatarImage src={user.avatar} alt={user.name} />
-                    <AvatarFallback className='rounded-lg'>SN</AvatarFallback>
+                    <AvatarImage
+                      src={displayUser.avatar}
+                      alt={displayUser.name}
+                    />
+                    <AvatarFallback className='rounded-lg'>
+                      {getInitials(displayUser.name)}
+                    </AvatarFallback>
                   </Avatar>
                   <div className='grid flex-1 text-start text-sm leading-tight'>
-                    <span className='truncate font-semibold'>{user.name}</span>
-                    <span className='truncate text-xs'>{user.email}</span>
+                    <span className='truncate font-semibold'>
+                      {displayUser.name}
+                    </span>
+                    <span className='truncate text-xs'>{displayUser.email}</span>
                   </div>
                 </div>
               </DropdownMenuLabel>

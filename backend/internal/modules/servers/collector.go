@@ -94,6 +94,10 @@ func (c *Collector) RunCommand(ctx context.Context, id string, command string) (
 	return outputSSH(ctx, client, command)
 }
 
+func (c *Collector) TouchMonitor(ctx context.Context, ttl time.Duration) error {
+	return c.repository.TouchMonitorActivity(ctx, ttl)
+}
+
 func (c *Collector) Shell(ctx context.Context, id string) (*ssh.Client, *ssh.Session, error) {
 	item, err := c.repository.Get(ctx, id)
 	if err != nil {
@@ -228,6 +232,14 @@ func (c *Collector) CollectAgentLoop(ctx context.Context, id string) error {
 	defer ticker.Stop()
 
 	for {
+		active, err := c.repository.MonitorActive(ctx)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+
 		metric, err := c.collectFromAgentConn(ctx, item, conn, reader)
 		if err != nil {
 			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))

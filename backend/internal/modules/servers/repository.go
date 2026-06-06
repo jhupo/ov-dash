@@ -143,6 +143,13 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 }
 
 func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connection, error) {
+	active, err := r.MonitorActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return []Connection{}, nil
+	}
 	if err := r.ResetStaleCollecting(ctx, 2*time.Minute); err != nil {
 		return nil, err
 	}
@@ -179,6 +186,36 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *Repository) TouchMonitorActivity(ctx context.Context, ttl time.Duration) error {
+	if ttl <= 0 {
+		ttl = 30 * time.Second
+	}
+	seconds := int(ttl / time.Second)
+	if ttl%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO server_monitor_activity (id, active_until)
+		VALUES (true, now() + make_interval(secs => $1))
+		ON CONFLICT (id) DO UPDATE SET
+			active_until = GREATEST(server_monitor_activity.active_until, EXCLUDED.active_until),
+			updated_at = now()
+	`, seconds)
+	return err
+}
+
+func (r *Repository) MonitorActive(ctx context.Context) (bool, error) {
+	var active bool
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(max(active_until) > now(), false)
+		FROM server_monitor_activity
+	`).Scan(&active)
+	return active, err
 }
 
 func (r *Repository) ResetStaleCollecting(ctx context.Context, maxAge time.Duration) error {
@@ -502,10 +539,10 @@ func scanConnection(row connectionScanner) (Connection, error) {
 	if metricID.Valid {
 		metric := Metric{
 			ServerID:         metricID.String,
-			CPUPercent:      nullFloat(cpuPercent),
-			CPUCores:        nullInt(cpuCores),
-			LatencyMS:       nullFloat(latencyMS),
-			MemoryUsedBytes: nullInt(memoryUsedBytes),
+			CPUPercent:       nullFloat(cpuPercent),
+			CPUCores:         nullInt(cpuCores),
+			LatencyMS:        nullFloat(latencyMS),
+			MemoryUsedBytes:  nullInt(memoryUsedBytes),
 			MemoryTotalBytes: nullInt(memoryTotalBytes),
 			SwapUsedBytes:    nullInt(swapUsedBytes),
 			SwapTotalBytes:   nullInt(swapTotalBytes),
@@ -569,5 +606,3 @@ func nullTime(value sql.NullTime) time.Time {
 func IsNotFound(err error) bool {
 	return err == pgx.ErrNoRows
 }
-
-

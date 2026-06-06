@@ -11,6 +11,7 @@ import (
 
 	"ov-dash/backend/internal/config"
 	apphttp "ov-dash/backend/internal/http"
+	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/pkg/logging"
 
@@ -31,6 +32,9 @@ func main() {
 
 	if err := runtime.Migrations.ApplyDir(ctx, cfg.Migrations.Dir); err != nil {
 		runtime.Logger.Fatal("apply migrations", zap.Error(err))
+	}
+	if err := auth.NewService(auth.NewRepository(runtime.DB)).EnsureDefaultAdmin(ctx); err != nil {
+		runtime.Logger.Fatal("ensure default admin", zap.Error(err))
 	}
 
 	router := apphttp.NewRouter(runtime)

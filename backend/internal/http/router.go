@@ -3,9 +3,11 @@ package http
 import (
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"ov-dash/backend/internal/modules/apps"
+	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/modules/chats"
 	"ov-dash/backend/internal/modules/dashboard"
 	"ov-dash/backend/internal/modules/servers"
@@ -25,7 +27,7 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 	r.Use(requestLogger(runtime.Logger))
 	r.Use(middleware.Recoverer)
 	r.Use(cors(runtime.Config.HTTP.AllowedOrigins))
-	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(timeoutExceptWebSocket(30 * time.Second))
 
 	health := NewHealthHandler(runtime.DB, runtime.Queue)
 
@@ -34,6 +36,8 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		proxySettings := NewProxySettingsHandler(runtime.Proxy)
+		authService := auth.NewService(auth.NewRepository(runtime.DB))
+		authHandler := NewAuthHandler(authService)
 		serverRepository := servers.NewRepository(runtime.DB)
 		serverConnections := NewServerConnectionsHandler(
 			servers.NewService(serverRepository),
@@ -41,28 +45,51 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 		)
 
 		r.Get("/health", health.Readiness)
-		r.Get("/platform", NewPlatformHandler(runtime).Status)
-		r.Post("/jobs", NewJobsHandler(runtime).Create)
-		r.Get("/dashboard", NewDashboardHandler(dashboard.NewService()).Snapshot)
-		tasksHandler := NewTasksHandler(tasks.NewService(tasks.NewRepository(runtime.DB)))
-		r.Get("/tasks", tasksHandler.List)
-		r.Delete("/tasks", tasksHandler.Delete)
-		r.Get("/users", NewUsersHandler(users.NewService(users.NewRepository(runtime.DB))).List)
-		r.Get("/apps", NewAppsHandler(apps.NewService(apps.NewRepository(runtime.DB))).List)
-		r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(runtime.DB))).ListConversations)
-		r.Get("/proxy-settings", proxySettings.Get)
-		r.Put("/proxy-settings", proxySettings.Update)
-		r.Get("/server-connections", serverConnections.List)
-		r.Post("/server-connections", serverConnections.Save)
-		r.Get("/server-connections/{id}/metrics", serverConnections.Metrics)
-		r.Post("/server-connections/{id}/agent/update", serverConnections.UpdateAgent)
-		r.Post("/server-connections/{id}/ssh/command", serverConnections.RunCommand)
-		r.Get("/server-connections/{id}/ssh/ws", serverConnections.Shell)
-		r.Put("/server-connections/{id}", serverConnections.Save)
-		r.Delete("/server-connections/{id}", serverConnections.Delete)
+		r.Post("/auth/login", authHandler.Login)
+
+		r.Group(func(r chi.Router) {
+			r.Use(authMiddleware(authService))
+
+			r.Post("/auth/logout", authHandler.Logout)
+			r.Get("/auth/me", authHandler.Me)
+			r.Put("/auth/password", authHandler.ChangePassword)
+			r.Get("/platform", NewPlatformHandler(runtime).Status)
+			r.Post("/jobs", NewJobsHandler(runtime).Create)
+			r.Get("/dashboard", NewDashboardHandler(dashboard.NewService()).Snapshot)
+			tasksHandler := NewTasksHandler(tasks.NewService(tasks.NewRepository(runtime.DB)))
+			r.Get("/tasks", tasksHandler.List)
+			r.Delete("/tasks", tasksHandler.Delete)
+			r.Get("/users", NewUsersHandler(users.NewService(users.NewRepository(runtime.DB))).List)
+			r.Get("/apps", NewAppsHandler(apps.NewService(apps.NewRepository(runtime.DB))).List)
+			r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(runtime.DB))).ListConversations)
+			r.Get("/proxy-settings", proxySettings.Get)
+			r.Put("/proxy-settings", proxySettings.Update)
+			r.Get("/server-connections", serverConnections.List)
+			r.Post("/server-connections/monitor/touch", serverConnections.TouchMonitor)
+			r.Post("/server-connections", serverConnections.Save)
+			r.Get("/server-connections/{id}/metrics", serverConnections.Metrics)
+			r.Post("/server-connections/{id}/agent/update", serverConnections.UpdateAgent)
+			r.Post("/server-connections/{id}/ssh/command", serverConnections.RunCommand)
+			r.Get("/server-connections/{id}/ssh/ws", serverConnections.Shell)
+			r.Put("/server-connections/{id}", serverConnections.Save)
+			r.Delete("/server-connections/{id}", serverConnections.Delete)
+		})
 	})
 
 	return r
+}
+
+func timeoutExceptWebSocket(timeout time.Duration) func(http.Handler) http.Handler {
+	timeoutMiddleware := middleware.Timeout(timeout)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			timeoutMiddleware(next).ServeHTTP(w, r)
+		})
+	}
 }
 
 func cors(allowedOrigins []string) func(http.Handler) http.Handler {

@@ -1,7 +1,10 @@
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { showSubmittedData } from '@/lib/show-submitted-data'
+import { Loader2, Lock } from 'lucide-react'
+import { toast } from 'sonner'
+import { useAuthStore } from '@/stores/auth-store'
+import { changePassword } from '@/services/auth'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -13,68 +16,126 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { DatePicker } from '@/components/date-picker'
+import { PasswordInput } from '@/components/password-input'
 
-const accountFormSchema = z.object({
-  name: z
-    .string()
-    .min(1, '请输入姓名。')
-    .min(2, '姓名至少需要 2 个字符。')
-    .max(30, '姓名不能超过 30 个字符。'),
-  dob: z.date('请选择出生日期。'),
-})
+const accountFormSchema = z
+  .object({
+    email: z.string(),
+    current_password: z.string().min(1, '请输入当前密码'),
+    new_password: z.string().min(8, '新密码至少需要 8 个字符'),
+    confirm_password: z.string().min(1, '请再次输入新密码'),
+  })
+  .refine((data) => data.new_password === data.confirm_password, {
+    message: '两次输入的新密码不一致',
+    path: ['confirm_password'],
+  })
 
 type AccountFormValues = z.infer<typeof accountFormSchema>
 
-// This can come from your database or API.
-const defaultValues: Partial<AccountFormValues> = {
-  name: '',
-}
-
 export function AccountForm() {
+  const user = useAuthStore((state) => state.auth.user)
+
   const form = useForm<AccountFormValues>({
     resolver: zodResolver(accountFormSchema),
-    defaultValues,
+    defaultValues: {
+      email: user?.email || 'classicriver@jhupo.com',
+      current_password: '',
+      new_password: '',
+      confirm_password: '',
+    },
   })
 
-  function onSubmit(data: AccountFormValues) {
-    showSubmittedData(data)
+  async function onSubmit(data: AccountFormValues) {
+    try {
+      await changePassword({
+        current_password: data.current_password,
+        new_password: data.new_password,
+      })
+      form.reset({
+        email: data.email,
+        current_password: '',
+        new_password: '',
+        confirm_password: '',
+      })
+      toast.success('密码已更新')
+    } catch {
+      toast.error('修改密码失败，请检查当前密码')
+    }
   }
+
+  const isSubmitting = form.formState.isSubmitting
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-8'>
+      <form
+        onSubmit={form.handleSubmit(onSubmit)}
+        className='grid max-w-xl gap-6'
+      >
         <FormField
           control={form.control}
-          name='name'
+          name='email'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>姓名</FormLabel>
+              <FormLabel>登录邮箱</FormLabel>
               <FormControl>
-                <Input placeholder='你的姓名' {...field} />
+                <Input disabled {...field} />
               </FormControl>
               <FormDescription>
-                这个姓名会显示在账号信息和邮件中。
+                账号邮箱由系统维护，当前页面只修改登录密码。
               </FormDescription>
               <FormMessage />
             </FormItem>
           )}
         />
-        <FormField
-          control={form.control}
-          name='dob'
-          render={({ field }) => (
-            <FormItem className='flex flex-col'>
-              <FormLabel>出生日期</FormLabel>
-              <DatePicker selected={field.value} onSelect={field.onChange} />
-              <FormDescription>
-                出生日期用于计算你的年龄。
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <Button type='submit'>更新账号</Button>
+        <div className='grid gap-4 rounded-lg border p-4'>
+          <div className='flex items-center gap-2 text-sm font-medium'>
+            <Lock className='size-4' />
+            修改密码
+          </div>
+          <FormField
+            control={form.control}
+            name='current_password'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>当前密码</FormLabel>
+                <FormControl>
+                  <PasswordInput placeholder='请输入当前密码' {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='new_password'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>新密码</FormLabel>
+                <FormControl>
+                  <PasswordInput placeholder='至少 8 个字符' {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='confirm_password'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>确认新密码</FormLabel>
+                <FormControl>
+                  <PasswordInput placeholder='再次输入新密码' {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+        <Button type='submit' className='w-fit' disabled={isSubmitting}>
+          {isSubmitting ? <Loader2 className='animate-spin' /> : <Lock />}
+          保存密码
+        </Button>
       </form>
     </Form>
   )

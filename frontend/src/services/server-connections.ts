@@ -102,6 +102,10 @@ export async function updateServerAgent(id: string): Promise<void> {
   await httpClient.post(`/server-connections/${id}/agent/update`)
 }
 
+export async function touchServerMonitor(): Promise<void> {
+  await httpClient.post('/server-connections/monitor/touch')
+}
+
 type MetricsResponse = {
   items: ServerMetric[]
 }

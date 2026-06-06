@@ -21,6 +21,7 @@ import {
 import {
   listServerMetrics,
   listServerConnections,
+  touchServerMonitor,
   type ServerConnection,
   type ServerMetric,
 } from '@/services/server-connections'
@@ -67,6 +68,14 @@ export function ServerStatus() {
     queryFn: listServerConnections,
     refetchInterval: 1_000,
   })
+
+  useEffect(() => {
+    void touchServerMonitor()
+    const timer = window.setInterval(() => {
+      void touchServerMonitor()
+    }, 10_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const items = servers.data ?? []
   const detail = useMemo(

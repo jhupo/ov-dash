@@ -23,6 +23,7 @@ import {
   deleteServerConnection,
   listServerConnections,
   saveServerConnection,
+  touchServerMonitor,
   updateServerAgent,
   type ServerAuthType,
   type ServerConnection,
@@ -120,6 +121,14 @@ export function ServerConnectionSettings() {
     queryFn: listServerConnections,
     refetchInterval: 15_000,
   })
+
+  useEffect(() => {
+    void touchServerMonitor()
+    const timer = window.setInterval(() => {
+      void touchServerMonitor()
+    }, 10_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const saveMutation = useMutation({
     mutationFn: saveServerConnection,

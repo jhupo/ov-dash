@@ -129,7 +129,7 @@ func (r *Runner) jobContext(ctx context.Context, jobType string) (context.Contex
 
 func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {
 	repository := servers.NewRepository(r.runtime.DB)
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	r.runtime.Logger.Info("server collector scheduler started")

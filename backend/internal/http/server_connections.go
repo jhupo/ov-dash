@@ -116,6 +116,14 @@ func (h *ServerConnectionsHandler) Metrics(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (h *ServerConnectionsHandler) TouchMonitor(w http.ResponseWriter, r *http.Request) {
+	if err := h.collector.TouchMonitor(r.Context(), 30*time.Second); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_monitor_touch_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 type serverCommandRequest struct {
 	Command string `json:"command"`
 }
