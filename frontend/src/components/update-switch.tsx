@@ -91,20 +91,18 @@ export function UpdateSwitch() {
           <span className='sr-only'>在线更新</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align='end' className='w-[288px] p-0'>
-        <div className='space-y-2.5 p-2.5'>
-          <div className='grid grid-cols-[minmax(0,1fr)_2rem] items-center gap-2'>
-            <div className='grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-md border bg-muted/20 px-2.5 py-2'>
-              <span className='text-xs text-muted-foreground'>当前版本</span>
-              <span className='truncate text-right font-mono text-sm font-semibold tracking-normal'>
-                {versionText(value)}
-              </span>
-            </div>
+      <DropdownMenuContent align='end' className='w-[264px] overflow-hidden p-0'>
+        <div className='px-3 py-2.5'>
+          <div className='grid grid-cols-[auto_minmax(0,1fr)_1.75rem] items-center gap-2'>
+            <span className='text-xs text-muted-foreground'>当前版本</span>
+            <span className='min-w-0 truncate text-right font-mono text-sm font-semibold tracking-normal'>
+              {versionText(value)}
+            </span>
             <Button
               type='button'
               size='icon'
               variant='ghost'
-              className='size-8'
+              className='size-7 rounded-md'
               disabled={busy}
               onClick={() => checkMutation.mutate()}
               aria-label='刷新版本'
@@ -114,10 +112,10 @@ export function UpdateSwitch() {
           </div>
 
           {showUpdatePanel ? (
-            <div className='space-y-2.5 rounded-md border bg-muted/25 p-2.5'>
+            <div className='-mx-3 mt-2.5 space-y-2.5 border-t px-3 pt-2.5'>
               {value?.hasUpdate && (
-                <div className='grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3'>
-                  <div className='grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2'>
+                <div className='grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2'>
+                  <div className='grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-md bg-muted/30 px-2.5 py-2'>
                     <span className='text-xs text-muted-foreground'>更新版本</span>
                     <span className='truncate text-right font-mono text-sm font-semibold'>
                       {value.latestVersion}
@@ -127,6 +125,7 @@ export function UpdateSwitch() {
                     <Button
                       type='button'
                       size='sm'
+                      className='h-8'
                       disabled={!canApply}
                       onClick={() => applyMutation.mutate()}
                     >
@@ -152,8 +151,11 @@ export function UpdateSwitch() {
               )}
             </div>
           ) : (
-            <div className='text-right text-xs text-muted-foreground'>
-              {value?.checkedAt ? formatDateTime(value.checkedAt) : '未检查'}
+            <div className='mt-1 flex items-center justify-end gap-1.5 text-[11px] text-muted-foreground/70'>
+              <span>{value?.checkedAt ? '已检查' : '未检查'}</span>
+              {value?.checkedAt && (
+                <span>{formatDateTime(value.checkedAt)}</span>
+              )}
             </div>
           )}
         </div>
@@ -176,7 +178,9 @@ function UpdateProgress({ update }: { update: UpdateRun }) {
         {isDone ? (
           <CheckCircle2 className='size-4 text-emerald-500' />
         ) : (
-          <span className='font-mono text-xs text-muted-foreground'>{progress}%</span>
+          <span className='font-mono text-xs text-muted-foreground'>
+            {progress}%
+          </span>
         )}
       </div>
       <div className='h-2 overflow-hidden rounded-full bg-muted'>
