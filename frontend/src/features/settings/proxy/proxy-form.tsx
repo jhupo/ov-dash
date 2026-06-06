@@ -13,7 +13,6 @@ import { Checkbox } from '@/components/ui/checkbox'
 import {
   Form,
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -103,18 +102,13 @@ export function ProxyForm() {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-8'>
+      <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-6'>
         <FormField
           control={form.control}
           name='enabled'
           render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-4 rounded-md border p-4'>
-              <div className='space-y-0.5'>
-                <FormLabel>启用 SOCKS5 代理</FormLabel>
-                <FormDescription>
-                  启用后，后台基础代理模块会为其他模块提供代理连接。
-                </FormDescription>
-              </div>
+            <FormItem className='flex items-center justify-between gap-4'>
+              <FormLabel>启用 SOCKS5 代理</FormLabel>
               <FormControl>
                 <Switch
                   checked={field.value}
@@ -126,7 +120,7 @@ export function ProxyForm() {
           )}
         />
 
-        <div className='grid gap-4 sm:grid-cols-[1fr_120px]'>
+        <div className='grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]'>
           <FormField
             control={form.control}
             name='host'
@@ -136,9 +130,6 @@ export function ProxyForm() {
                 <FormControl>
                   <Input placeholder='127.0.0.1' autoComplete='off' {...field} />
                 </FormControl>
-                <FormDescription>
-                  SOCKS5 服务地址，可以填写 IP 或域名。
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -150,7 +141,13 @@ export function ProxyForm() {
               <FormItem>
                 <FormLabel>端口</FormLabel>
                 <FormControl>
-                  <Input type='number' min={1} max={65535} {...field} />
+                  <Input
+                    type='number'
+                    min={1}
+                    max={65535}
+                    inputMode='numeric'
+                    {...field}
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -168,7 +165,6 @@ export function ProxyForm() {
                 <FormControl>
                   <Input autoComplete='off' {...field} />
                 </FormControl>
-                <FormDescription>没有认证时留空。</FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -191,7 +187,6 @@ export function ProxyForm() {
                     {...field}
                   />
                 </FormControl>
-                <FormDescription>保存后不会在页面回显。</FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -212,9 +207,6 @@ export function ProxyForm() {
                 </FormControl>
                 <div className='space-y-1 leading-none'>
                   <FormLabel>清除已保存密码</FormLabel>
-                  <FormDescription>
-                    勾选后保存会删除后台保存的 SOCKS5 密码。
-                  </FormDescription>
                 </div>
               </FormItem>
             )}

@@ -5,7 +5,7 @@ export function SettingsProxy() {
   return (
     <ContentSection
       title='代理'
-      desc='配置后台统一使用的 SOCKS5 代理，供后续模块复用。'
+      desc='配置 SOCKS5 代理连接。'
     >
       <ProxyForm />
     </ContentSection>
