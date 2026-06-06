@@ -8,11 +8,11 @@ export function SignIn() {
 
   return (
     <AuthLayout>
-      <Card className='max-w-sm gap-4'>
-        <CardHeader>
-          <CardTitle className='text-lg tracking-tight'>登录</CardTitle>
+      <Card className='w-full gap-6 rounded-lg border-border/80 shadow-xl shadow-black/10'>
+        <CardHeader className='px-8 pt-8 pb-0'>
+          <CardTitle className='text-xl tracking-tight'>登录</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className='px-8 pb-8'>
           <UserAuthForm redirectTo={redirect} />
         </CardContent>
       </Card>

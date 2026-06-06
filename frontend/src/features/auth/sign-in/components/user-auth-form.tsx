@@ -44,7 +44,7 @@ export function UserAuthForm({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      email: 'classicriver@jhupo.com',
+      email: '',
       password: '',
     },
   })
@@ -69,7 +69,7 @@ export function UserAuthForm({
     <Form {...form}>
       <form
         onSubmit={form.handleSubmit(onSubmit)}
-        className={cn('grid gap-3', className)}
+        className={cn('grid gap-5', className)}
         {...props}
       >
         <FormField
@@ -79,7 +79,12 @@ export function UserAuthForm({
             <FormItem>
               <FormLabel>邮箱</FormLabel>
               <FormControl>
-                <Input placeholder='classicriver@jhupo.com' {...field} />
+                <Input
+                  className='h-11'
+                  placeholder='请输入邮箱'
+                  autoComplete='email'
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -92,13 +97,18 @@ export function UserAuthForm({
             <FormItem>
               <FormLabel>密码</FormLabel>
               <FormControl>
-                <PasswordInput placeholder='请输入密码' {...field} />
+                <PasswordInput
+                  className='h-11'
+                  placeholder='请输入密码'
+                  autoComplete='current-password'
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
           )}
         />
-        <Button className='mt-2' disabled={isLoading}>
+        <Button className='mt-1 h-11' disabled={isLoading}>
           {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
           登录
         </Button>
