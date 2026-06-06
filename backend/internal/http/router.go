@@ -58,6 +58,7 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 			r.Get("/updates", updatesHandler.Status)
 			r.Post("/updates/check", updatesHandler.Check)
 			r.Post("/updates/apply", updatesHandler.Update)
+			r.Post("/updates/restart", updatesHandler.Restart)
 			r.Get("/platform", NewPlatformHandler(runtime).Status)
 			r.Post("/jobs", NewJobsHandler(runtime).Create)
 			r.Get("/dashboard", NewDashboardHandler(dashboard.NewService()).Snapshot)

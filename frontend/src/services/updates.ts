@@ -15,8 +15,9 @@ export type UpdateRun = {
   startedAt: string
   endedAt?: string
   version: string
-  status: 'running' | 'success' | 'error'
+  status: 'running' | 'ready' | 'restarting' | 'success' | 'error'
   message: string
+  progress: number
 }
 
 type StatusResponse = {
@@ -44,5 +45,10 @@ export async function checkUpdate(): Promise<UpdateStatus> {
 
 export async function applyUpdate(): Promise<UpdateRun> {
   const response = await httpClient.post<ApplyResponse>('/updates/apply')
+  return response.data.update
+}
+
+export async function restartUpdate(): Promise<UpdateRun> {
+  const response = await httpClient.post<ApplyResponse>('/updates/restart')
   return response.data.update
 }

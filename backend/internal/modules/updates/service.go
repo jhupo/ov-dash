@@ -26,6 +26,7 @@ var (
 	ErrUpdateRunning  = errors.New("online update is already running")
 	ErrNoNewVersion   = errors.New("no new version available")
 	ErrNotGitRepo     = errors.New("update workdir is not a git repository")
+	ErrUpdateNotReady = errors.New("update is not ready to restart")
 )
 
 type Service struct {
@@ -55,6 +56,7 @@ type UpdateResult struct {
 	Version   string     `json:"version"`
 	Status    string     `json:"status"`
 	Message   string     `json:"message"`
+	Progress  int        `json:"progress"`
 }
 
 func NewService(cfg config.Config, logger *zap.Logger) *Service {
@@ -73,11 +75,12 @@ func (s *Service) Status(ctx context.Context) (CheckResult, *UpdateResult, error
 		fileUpdate.EndedAt = &endedAt
 		fileUpdate.Status = "error"
 		fileUpdate.Message = "更新进程已停止，请查看 Docker 日志"
+		fileUpdate.Progress = 0
 		s.writeUpdateState(*fileUpdate)
 	}
 	if fileUpdate != nil {
 		s.update = fileUpdate
-		s.updating = fileUpdate.Status == "running"
+		s.updating = fileUpdate.Status == "running" || fileUpdate.Status == "restarting"
 	}
 
 	result := CheckResult{
@@ -159,7 +162,8 @@ func (s *Service) Update(ctx context.Context) (UpdateResult, error) {
 		StartedAt: time.Now().UTC(),
 		Version:   check.LatestVersion,
 		Status:    "running",
-		Message:   "正在更新",
+		Message:   "正在准备更新",
+		Progress:  5,
 	}
 	s.updating = true
 	s.update = &result
@@ -171,6 +175,7 @@ func (s *Service) Update(ctx context.Context) (UpdateResult, error) {
 		result.EndedAt = &endedAt
 		result.Status = "error"
 		result.Message = trimOutput(err.Error())
+		result.Progress = 0
 		s.mu.Lock()
 		s.updating = false
 		s.update = &result
@@ -180,6 +185,40 @@ func (s *Service) Update(ctx context.Context) (UpdateResult, error) {
 	}
 
 	return result, nil
+}
+
+func (s *Service) Restart(ctx context.Context) (UpdateResult, error) {
+	fileUpdate := s.readUpdateState()
+	if fileUpdate == nil || fileUpdate.Status != "ready" {
+		return UpdateResult{}, ErrUpdateNotReady
+	}
+
+	result := *fileUpdate
+	result.Status = "restarting"
+	result.Message = "正在重启服务"
+	result.Progress = 95
+	s.writeUpdateState(result)
+
+	output, err := s.shell(ctx, "docker compose --env-file .env up -d")
+	endedAt := time.Now().UTC()
+	result.EndedAt = &endedAt
+	if err != nil {
+		result.Status = "error"
+		result.Message = trimOutput(err.Error() + "\n" + output)
+		result.Progress = 0
+	} else {
+		result.Status = "success"
+		result.Message = "更新完成"
+		result.Progress = 100
+	}
+	s.writeUpdateState(result)
+
+	s.mu.Lock()
+	s.updating = false
+	s.update = &result
+	s.mu.Unlock()
+
+	return result, err
 }
 
 func (s *Service) startUpdater(ctx context.Context, version string) error {
@@ -226,15 +265,16 @@ func updaterScript(remote string, version string, statusPath string) string {
 write_status() {
   status="$1"
   message="$2"
+  progress="$3"
   ended=""
   if [ "$status" != "running" ]; then ended=", \"endedAt\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ\")\"; fi
-  printf '{"startedAt":"%s"%%s,"version":"%s","status":"%%s","message":"%%s"}\n' "$ended" "$status" "$(printf '%%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')" > %s
+  printf '{"startedAt":"%s"%%s,"version":"%s","status":"%%s","message":"%%s","progress":%%s}\n' "$ended" "$status" "$(printf '%%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')" "$progress" > %s
 }
-write_status running 正在更新
-if git fetch --tags --force %s && git checkout --force %s && git reset --hard %s && docker compose --env-file .env up -d --build; then
-  write_status success 更新完成
+write_status running 正在拉取版本 20
+if git fetch --tags --force %s && git checkout --force %s && git reset --hard %s && docker compose --env-file .env build; then
+  write_status ready 更新已准备完成 90
 else
-  write_status error 更新失败
+  write_status error 更新失败 0
   exit 1
 fi`,
 		startedAt,
@@ -297,6 +337,10 @@ func (s *Service) git(ctx context.Context, args ...string) error {
 
 func (s *Service) gitOutput(ctx context.Context, args ...string) (string, error) {
 	return s.command(ctx, s.cfg.Update.WorkDir, "git", args...)
+}
+
+func (s *Service) shell(ctx context.Context, command string) (string, error) {
+	return s.command(ctx, s.cfg.Update.WorkDir, "sh", "-c", command)
 }
 
 func (s *Service) isGitRepo(ctx context.Context) bool {

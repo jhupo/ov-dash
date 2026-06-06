@@ -63,3 +63,21 @@ func (h *UpdatesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"update": result})
 }
+
+func (h *UpdatesHandler) Restart(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	result, err := h.service.Restart(ctx)
+	if err != nil {
+		status := http.StatusInternalServerError
+		code := "update_restart_failed"
+		if errors.Is(err, updates.ErrUpdateNotReady) {
+			status = http.StatusBadRequest
+			code = err.Error()
+		}
+		writeJSON(w, status, map[string]string{"error": code, "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"update": result})
+}

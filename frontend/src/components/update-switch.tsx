@@ -1,11 +1,13 @@
 import axios from 'axios'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Rocket, UploadCloud } from 'lucide-react'
+import { CheckCircle2, CloudUpload, RefreshCw, Rocket, RotateCw } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   applyUpdate,
   checkUpdate,
   getUpdateStatus,
+  restartUpdate,
+  type UpdateRun,
   type UpdateStatus,
 } from '@/services/updates'
 import { Badge } from '@/components/ui/badge'
@@ -13,7 +15,6 @@ import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
@@ -23,8 +24,12 @@ export function UpdateSwitch() {
   const status = useQuery({
     queryKey: ['updates'],
     queryFn: getUpdateStatus,
-    refetchInterval: (query) =>
-      query.state.data?.status.updating ? 5_000 : false,
+    refetchInterval: (query) => {
+      const update = query.state.data?.update
+      return update?.status === 'running' || update?.status === 'restarting'
+        ? 2_000
+        : false
+    },
   })
   const value = status.data?.status
   const update = status.data?.update
@@ -42,89 +47,164 @@ export function UpdateSwitch() {
     mutationFn: applyUpdate,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['updates'] })
-      toast.success('更新已开始，系统会自动拉取并重建')
+      toast.success('开始准备更新')
     },
     onError: (error) => toast.error(errorMessage(error, '启动更新失败')),
   })
 
+  const restartMutation = useMutation({
+    mutationFn: restartUpdate,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['updates'] })
+      toast.success('服务正在重启')
+    },
+    onError: (error) => toast.error(errorMessage(error, '重启服务失败')),
+  })
+
   const busy =
-    status.isFetching || checkMutation.isPending || applyMutation.isPending
+    status.isFetching ||
+    checkMutation.isPending ||
+    applyMutation.isPending ||
+    restartMutation.isPending
+  const canApply = Boolean(value?.hasUpdate && !busy && !isActiveUpdate(update))
+  const canRestart = update?.status === 'ready' && !busy
 
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant='ghost' size='icon' className='rounded-full'>
-          <UploadCloud className='size-[1.2rem]' />
+          <CloudUpload className='size-[1.2rem]' />
           <span className='sr-only'>在线更新</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align='end' className='w-80 p-0'>
-        <DropdownMenuLabel className='flex items-center justify-between gap-3 px-4 py-3'>
-          <span>在线更新</span>
-          <StatusBadge status={value} />
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <div className='space-y-4 p-4 text-sm'>
-          <div className='grid gap-2'>
-            <InfoLine label='当前版本' value={versionText(value)} />
-            <InfoLine label='最新版本' value={value?.latestVersion || '未检查'} />
-            <InfoLine label='检查时间' value={formatDateTime(value?.checkedAt)} />
+      <DropdownMenuContent align='end' className='w-[380px] p-0'>
+        <div className='space-y-4 p-4'>
+          <div className='flex items-start justify-between gap-4'>
+            <div className='min-w-0'>
+              <div className='text-sm font-semibold'>在线更新</div>
+              <div className='mt-3 text-xs text-muted-foreground'>当前版本</div>
+              <div className='mt-1 truncate text-sm font-semibold tabular-nums'>
+                {versionText(value)}
+              </div>
+            </div>
+            <div className='flex shrink-0 flex-col items-end gap-3'>
+              <StatusBadge status={value} update={update} />
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={busy}
+                onClick={() => checkMutation.mutate()}
+              >
+                <RefreshCw className={busy ? 'animate-spin' : undefined} />
+                刷新
+              </Button>
+            </div>
           </div>
 
-          {value?.message && (
-            <div className='rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground'>
-              {value.message}
-            </div>
-          )}
-          {update?.status === 'running' && (
-            <div className='rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground'>
-              正在更新到 {update.version}，请稍候。
-            </div>
-          )}
-          {update?.status === 'error' && (
-            <div className='max-h-24 overflow-auto rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive'>
-              {update.message}
-            </div>
-          )}
+          {(value?.hasUpdate || update) && (
+            <>
+              <DropdownMenuSeparator />
+              <div className='space-y-3'>
+                {value?.hasUpdate && (
+                  <div className='rounded-md border bg-muted/30 p-3'>
+                    <div className='flex items-center justify-between gap-3'>
+                      <span className='text-xs text-muted-foreground'>发现新版本</span>
+                      <span className='font-mono text-sm font-semibold'>
+                        {value.latestVersion}
+                      </span>
+                    </div>
+                    <div className='mt-2 text-xs text-muted-foreground'>
+                      检查时间 {formatDateTime(value.checkedAt)}
+                    </div>
+                  </div>
+                )}
 
-          <div className='grid grid-cols-2 gap-2'>
-            <Button
-              type='button'
-              variant='outline'
-              disabled={busy}
-              onClick={() => checkMutation.mutate()}
-            >
-              <RefreshCw className={busy ? 'animate-spin' : undefined} />
-              刷新
-            </Button>
-            <Button
-              type='button'
-              disabled={!value?.hasUpdate || value.updating || busy}
-              onClick={() => applyMutation.mutate()}
-            >
-              <Rocket />
-              一键更新
-            </Button>
-          </div>
+                {update && <UpdateProgress update={update} />}
+
+                <div className='grid grid-cols-2 gap-2'>
+                  <Button
+                    type='button'
+                    variant={canRestart ? 'outline' : 'default'}
+                    disabled={!canApply}
+                    onClick={() => applyMutation.mutate()}
+                  >
+                    <Rocket />
+                    更新
+                  </Button>
+                  <Button
+                    type='button'
+                    disabled={!canRestart}
+                    onClick={() => restartMutation.mutate()}
+                  >
+                    <RotateCw />
+                    立即重启
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
   )
 }
 
-function StatusBadge({ status }: { status?: UpdateStatus }) {
-  if (status?.updating) return <Badge variant='secondary'>更新中</Badge>
-  if (status?.hasUpdate) return <Badge>有新版本</Badge>
+function StatusBadge({
+  status,
+  update,
+}: {
+  status?: UpdateStatus
+  update?: UpdateRun | null
+}) {
+  if (update?.status === 'running') return <Badge variant='secondary'>准备中</Badge>
+  if (update?.status === 'ready') return <Badge>待重启</Badge>
+  if (update?.status === 'restarting') return <Badge variant='secondary'>重启中</Badge>
+  if (status?.hasUpdate) return <Badge>有更新</Badge>
   return <Badge variant='outline'>当前版本</Badge>
 }
 
-function InfoLine({ label, value }: { label: string; value: string }) {
+function UpdateProgress({ update }: { update: UpdateRun }) {
+  const progress = Math.max(0, Math.min(100, update.progress || 0))
+  const isDone = update.status === 'ready' || update.status === 'success'
+  const isError = update.status === 'error'
+
   return (
-    <div className='flex items-center justify-between gap-3'>
-      <span className='text-muted-foreground'>{label}</span>
-      <span className='truncate font-medium tabular-nums'>{value}</span>
+    <div className='space-y-2 rounded-md border p-3'>
+      <div className='flex items-center justify-between gap-3 text-sm'>
+        <span className='font-medium'>{update.message}</span>
+        {isDone ? (
+          <CheckCircle2 className='size-4 text-emerald-500' />
+        ) : (
+          <span className='font-mono text-xs text-muted-foreground'>{progress}%</span>
+        )}
+      </div>
+      <div className='h-2 overflow-hidden rounded-full bg-muted'>
+        <div
+          className={
+            isError
+              ? 'h-full bg-destructive transition-all'
+              : 'h-full bg-primary transition-all'
+          }
+          style={{ width: `${isError ? 100 : progress}%` }}
+        />
+      </div>
+      {update.status === 'ready' && (
+        <div className='text-xs text-muted-foreground'>
+          更新已准备完成，点击“立即重启”完成切换。
+        </div>
+      )}
+      {isError && (
+        <div className='max-h-20 overflow-auto text-xs text-destructive'>
+          {update.message}
+        </div>
+      )}
     </div>
   )
+}
+
+function isActiveUpdate(update?: UpdateRun | null) {
+  return update?.status === 'running' || update?.status === 'restarting'
 }
 
 function versionText(status?: UpdateStatus) {
