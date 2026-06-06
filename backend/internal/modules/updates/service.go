@@ -43,6 +43,7 @@ type CheckResult struct {
 	CurrentVersion string     `json:"currentVersion"`
 	CurrentCommit  string     `json:"currentCommit"`
 	LatestVersion  string     `json:"latestVersion"`
+	LatestCommit   string     `json:"latestCommit"`
 	HasUpdate      bool       `json:"hasUpdate"`
 	CheckedAt      *time.Time `json:"checkedAt,omitempty"`
 	Message        string     `json:"message"`
@@ -75,6 +76,9 @@ func (s *Service) Status(ctx context.Context) (CheckResult, *UpdateResult, error
 		fileUpdate.EndedAt = &endedAt
 		fileUpdate.Status = "error"
 		fileUpdate.Message = "更新进程已停止，请查看 Docker 日志"
+		if logs := updaterContainerLogs(ctx, s.cfg.Update.Project); logs != "" {
+			fileUpdate.Message = trimOutput("更新进程已停止\n" + logs)
+		}
 		fileUpdate.Progress = 0
 		s.writeUpdateState(*fileUpdate)
 	}
@@ -91,7 +95,8 @@ func (s *Service) Status(ctx context.Context) (CheckResult, *UpdateResult, error
 	}
 	if s.check != nil {
 		result.LatestVersion = s.check.LatestVersion
-		result.HasUpdate = s.check.LatestVersion != "" && s.check.LatestVersion != current
+		result.LatestCommit = s.check.LatestCommit
+		result.HasUpdate = s.check.HasUpdate
 		result.CheckedAt = s.check.CheckedAt
 		result.Message = s.check.Message
 	}
@@ -115,11 +120,25 @@ func (s *Service) Check(ctx context.Context) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 	latest := latestTag(strings.Fields(tagsRaw))
+	latestCommit := ""
+	hasUpdate := false
+	if latest != "" {
+		latestCommit, err = s.gitOutput(ctx, "rev-list", "-n", "1", latest)
+		if err != nil {
+			return CheckResult{}, err
+		}
+		latestCommit = strings.TrimSpace(latestCommit)
+		_, err := s.gitOutput(ctx, "merge-base", "--is-ancestor", latestCommit, "HEAD")
+		if err != nil {
+			hasUpdate = true
+		}
+	}
 	result := CheckResult{
 		CurrentVersion: current,
 		CurrentCommit:  commit,
 		LatestVersion:  latest,
-		HasUpdate:      latest != "" && latest != current,
+		LatestCommit:   shortCommit(latestCommit),
+		HasUpdate:      hasUpdate,
 		Enabled:        true,
 	}
 	checkedAt := time.Now().UTC()
@@ -135,6 +154,10 @@ func (s *Service) Check(ctx context.Context) (CheckResult, error) {
 	s.mu.Lock()
 	result.Updating = s.updating
 	s.check = &result
+	if !result.HasUpdate && !s.updating {
+		s.update = nil
+		s.clearUpdateState()
+	}
 	s.mu.Unlock()
 
 	return result, nil
@@ -224,10 +247,10 @@ func (s *Service) Restart(ctx context.Context) (UpdateResult, error) {
 func (s *Service) startUpdater(ctx context.Context, version string) error {
 	statusPath := filepath.Join(s.cfg.Update.WorkDir, ".ovdash-update-status.json")
 	script := updaterScript(s.cfg.Update.Remote, version, statusPath)
+	_, _ = s.command(ctx, "", "docker", "rm", "-f", updaterName(s.cfg.Update.Project))
 	args := []string{
 		"run",
 		"--detach",
-		"--rm",
 		"--user",
 		"0:0",
 		"--name",
@@ -330,6 +353,13 @@ func (s *Service) writeUpdateState(result UpdateResult) {
 	}
 }
 
+func (s *Service) clearUpdateState() {
+	path := filepath.Join(s.cfg.Update.WorkDir, ".ovdash-update-status.json")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logger.Warn("clear update state", zap.Error(err))
+	}
+}
+
 func (s *Service) git(ctx context.Context, args ...string) error {
 	_, err := s.command(ctx, s.cfg.Update.WorkDir, "git", args...)
 	return err
@@ -374,6 +404,27 @@ func updaterContainerRunning(ctx context.Context, project string) bool {
 		return false
 	}
 	return strings.TrimSpace(stdout.String()) == name
+}
+
+func updaterContainerLogs(ctx context.Context, project string) string {
+	name := updaterName(project)
+	cmd := exec.CommandContext(ctx, "docker", "logs", "--tail", "120", name)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+}
+
+func shortCommit(commit string) string {
+	commit = strings.TrimSpace(commit)
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
 }
 
 func updaterName(project string) string {
