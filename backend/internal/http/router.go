@@ -10,6 +10,7 @@ import (
 	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/modules/chats"
 	"ov-dash/backend/internal/modules/dashboard"
+	"ov-dash/backend/internal/modules/notifications"
 	"ov-dash/backend/internal/modules/servers"
 	"ov-dash/backend/internal/modules/tasks"
 	"ov-dash/backend/internal/modules/users"
@@ -38,6 +39,12 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 		proxySettings := NewProxySettingsHandler(runtime.Proxy)
 		authService := auth.NewService(auth.NewRepository(runtime.DB))
 		authHandler := NewAuthHandler(authService)
+		telegramNotifications := NewTelegramNotificationsHandler(
+			notifications.NewService(
+				notifications.NewRepository(runtime.DB),
+				notifications.NewProxiedTelegramClient(runtime.Proxy),
+			),
+		)
 		serverRepository := servers.NewRepository(runtime.DB)
 		serverConnections := NewServerConnectionsHandler(
 			servers.NewService(serverRepository),
@@ -46,6 +53,7 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 
 		r.Get("/health", health.Readiness)
 		r.Post("/auth/login", authHandler.Login)
+		r.Post("/incoming-messages", telegramNotifications.IncomingMessage)
 
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware(authService))
@@ -64,6 +72,10 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 			r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(runtime.DB))).ListConversations)
 			r.Get("/proxy-settings", proxySettings.Get)
 			r.Put("/proxy-settings", proxySettings.Update)
+			r.Get("/telegram-notifications/settings", telegramNotifications.GetSettings)
+			r.Put("/telegram-notifications/settings", telegramNotifications.UpdateSettings)
+			r.Get("/telegram-notifications/users", telegramNotifications.ListUserSettings)
+			r.Put("/telegram-notifications/users/{userID}", telegramNotifications.UpdateUserSettings)
 			r.Get("/server-connections", serverConnections.List)
 			r.Post("/server-connections/monitor/touch", serverConnections.TouchMonitor)
 			r.Post("/server-connections", serverConnections.Save)
@@ -99,7 +111,7 @@ func cors(allowedOrigins []string) func(http.Handler) http.Handler {
 			if origin != "" && (slices.Contains(allowedOrigins, "*") || slices.Contains(allowedOrigins, origin)) {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID, X-OV-Dash-Token")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			}
 			if r.Method == http.MethodOptions {

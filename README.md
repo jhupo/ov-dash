@@ -48,6 +48,21 @@ curl -X POST http://localhost:8080/api/v1/jobs \
   -d '{"type":"noop","payload":{}}'
 ```
 
+Telegram notifications:
+
+1. Sign in to the dashboard and open `Settings -> Telegram 通知`.
+2. Configure the Telegram Bot Token, an inbound token, and each user's Telegram Chat ID.
+3. Send an inbound message to a user:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/incoming-messages \
+  -H "Content-Type: application/json" \
+  -H "X-OV-Dash-Token: <inbound-token>" \
+  -d '{"username":"classicriver","title":"Alert","message":"Server CPU is high","source":"monitor"}'
+```
+
+The endpoint also accepts `Authorization: Bearer <inbound-token>` and can target users by `user_id` instead of `username`.
+
 ## Test deployment
 
 Target host: `192.168.2.17`
