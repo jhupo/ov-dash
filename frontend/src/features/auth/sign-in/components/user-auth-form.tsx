@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import axios from 'axios'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -58,8 +59,8 @@ export function UserAuthForm({
       auth.setAccessToken(session.token)
       toast.success('登录成功')
       window.location.assign(redirectTo || '/')
-    } catch {
-      toast.error('登录失败，请检查邮箱和密码')
+    } catch (error) {
+      toast.error(loginErrorMessage(error))
     } finally {
       setIsLoading(false)
     }
@@ -115,4 +116,17 @@ export function UserAuthForm({
       </form>
     </Form>
   )
+}
+
+function loginErrorMessage(error: unknown) {
+  if (!axios.isAxiosError(error)) {
+    return '登录失败，请稍后重试'
+  }
+  if (error.response?.status === 401) {
+    return '登录失败，请检查邮箱和密码'
+  }
+  if (!error.response) {
+    return '无法连接登录服务'
+  }
+  return '登录服务异常，请稍后重试'
 }
