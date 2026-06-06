@@ -23,8 +23,8 @@ func (r *Repository) List(ctx context.Context) ([]Connection, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed,
-			c.collect_status, c.collect_error, c.last_collected_at, c.created_at, c.updated_at,
+			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
+			c.collect_status, c.collect_error, c.last_collected_at, c.agent_last_seen_at, c.created_at, c.updated_at,
 			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
 			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
@@ -54,8 +54,8 @@ func (r *Repository) Get(ctx context.Context, id string) (Connection, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed,
-			c.collect_status, c.collect_error, c.last_collected_at, c.created_at, c.updated_at,
+			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
+			c.collect_status, c.collect_error, c.last_collected_at, c.agent_last_seen_at, c.created_at, c.updated_at,
 			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
 			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
@@ -100,8 +100,8 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 			collect_error = '',
 			updated_at = now()
 		RETURNING id, name, group_name, region, host, port, username, auth_type,
-		          password, private_key, expires_at, collect_interval_seconds, next_collect_at, collector_installed,
-		          collect_status, collect_error, last_collected_at, created_at, updated_at
+		          password, private_key, expires_at, collect_interval_seconds, next_collect_at, collector_installed, agent_port,
+		          collect_status, collect_error, last_collected_at, agent_last_seen_at, created_at, updated_at
 	`,
 		input.ID,
 		input.Name,
@@ -131,9 +131,11 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 		&item.CollectInterval,
 		&item.NextCollectAt,
 		&item.CollectorInstalled,
+		&item.AgentPort,
 		&item.CollectStatus,
 		&item.CollectError,
 		&item.LastCollectedAt,
+		&item.AgentLastSeenAt,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	)
@@ -148,8 +150,8 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 		SELECT
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
 			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at,
-			c.collector_installed, c.collect_status, c.collect_error, c.last_collected_at,
-			c.created_at, c.updated_at,
+			c.collector_installed, c.agent_port, c.collect_status, c.collect_error, c.last_collected_at,
+			c.agent_last_seen_at, c.created_at, c.updated_at,
 			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
 			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
@@ -159,6 +161,7 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 		LEFT JOIN server_metrics m ON m.server_id = c.id
 		WHERE c.next_collect_at <= now()
 		  AND c.collect_status <> 'collecting'
+		  AND (c.agent_last_seen_at IS NULL OR c.agent_last_seen_at < now() - interval '10 seconds')
 		ORDER BY c.next_collect_at ASC
 		LIMIT $1
 	`, limit)
@@ -305,6 +308,14 @@ func (r *Repository) MarkCollectFailed(ctx context.Context, id string, message s
 }
 
 func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
+	return r.saveMetric(ctx, metric, true)
+}
+
+func (r *Repository) SaveAgentMetric(ctx context.Context, metric Metric) error {
+	return r.saveMetric(ctx, metric, false)
+}
+
+func (r *Repository) saveMetric(ctx context.Context, metric Metric, scheduleNext bool) error {
 	raw, err := json.Marshal(metric.Raw)
 	if err != nil {
 		return err
@@ -387,10 +398,14 @@ func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
 		    collect_status = 'ok',
 		    collect_error = '',
 		    last_collected_at = $2::timestamptz,
-		    next_collect_at = $2::timestamptz + make_interval(secs => collect_interval_seconds),
+		    agent_last_seen_at = $2::timestamptz,
+		    next_collect_at = CASE
+		        WHEN $3::boolean THEN $2::timestamptz + make_interval(secs => collect_interval_seconds)
+		        ELSE $2::timestamptz + interval '20 seconds'
+		    END,
 		    updated_at = now()
 		WHERE id = $1
-	`, metric.ServerID, metric.CollectedAt)
+	`, metric.ServerID, metric.CollectedAt, scheduleNext)
 	return err
 }
 
@@ -444,9 +459,11 @@ func scanConnection(row connectionScanner) (Connection, error) {
 		&item.CollectInterval,
 		&item.NextCollectAt,
 		&item.CollectorInstalled,
+		&item.AgentPort,
 		&item.CollectStatus,
 		&item.CollectError,
 		&item.LastCollectedAt,
+		&item.AgentLastSeenAt,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 		&metricID,

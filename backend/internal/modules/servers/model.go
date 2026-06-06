@@ -17,9 +17,11 @@ type Connection struct {
 	CollectInterval   int
 	NextCollectAt      time.Time
 	CollectorInstalled bool
+	AgentPort          int
 	CollectStatus      string
 	CollectError       string
 	LastCollectedAt    *time.Time
+	AgentLastSeenAt    *time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	Metric             *Metric
@@ -73,9 +75,11 @@ type PublicConnection struct {
 	CollectInterval   int        `json:"collect_interval_seconds"`
 	NextCollectAt      time.Time  `json:"next_collect_at"`
 	CollectorInstalled bool       `json:"collector_installed"`
+	AgentPort          int        `json:"agent_port"`
 	CollectStatus      string     `json:"collect_status"`
 	CollectError       string     `json:"collect_error"`
 	LastCollectedAt    *time.Time `json:"last_collected_at"`
+	AgentLastSeenAt    *time.Time `json:"agent_last_seen_at"`
 	Metric             *Metric    `json:"metric"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
@@ -118,9 +122,11 @@ func (c Connection) Public() PublicConnection {
 		CollectInterval:   c.CollectInterval,
 		NextCollectAt:      c.NextCollectAt,
 		CollectorInstalled: c.CollectorInstalled,
+		AgentPort:          c.AgentPort,
 		CollectStatus:      c.CollectStatus,
 		CollectError:       c.CollectError,
 		LastCollectedAt:    c.LastCollectedAt,
+		AgentLastSeenAt:    c.AgentLastSeenAt,
 		Metric:             c.Metric,
 		CreatedAt:          c.CreatedAt,
 		UpdatedAt:          c.UpdatedAt,

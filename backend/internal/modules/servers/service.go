@@ -73,8 +73,8 @@ func (s *Service) Save(ctx context.Context, input SaveInput) (PublicConnection, 
 	if input.AuthType != "password" && input.AuthType != "key" {
 		return PublicConnection{}, ErrInvalidAuthType
 	}
-	if input.CollectInterval < 30 {
-		input.CollectInterval = 30
+	if input.CollectInterval < 10 {
+		input.CollectInterval = 10
 	}
 
 	item, err := s.repository.Upsert(ctx, input)

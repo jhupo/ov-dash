@@ -3,10 +3,14 @@ package servers
 const agentScript = `#!/bin/sh
 set -eu
 
+port="${OVDASH_AGENT_PORT:-19087}"
+mode="${1:-serve}"
+
 num() {
   printf '%s' "$1" | awk '{ if ($1 == "") print 0; else print $1 }'
 }
 
+collect_once() {
 mem_total=$(awk '/MemTotal:/ {print $2 * 1024}' /proc/meminfo 2>/dev/null || echo 0)
 mem_available=$(awk '/MemAvailable:/ {print $2 * 1024}' /proc/meminfo 2>/dev/null || echo 0)
 swap_total=$(awk '/SwapTotal:/ {print $2 * 1024}' /proc/meminfo 2>/dev/null || echo 0)
@@ -19,8 +23,13 @@ disk_used=$(echo "$disk_line" | awk '{print $1+0}')
 disk_total=$(echo "$disk_line" | awk '{print $2+0}')
 
 cpu_line_1=$(awk '/^cpu / {print}' /proc/stat)
+rx1=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") rx+=$2} END {print rx+0}' /proc/net/dev)
+tx1=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") tx+=$10} END {print tx+0}' /proc/net/dev)
 sleep 1
 cpu_line_2=$(awk '/^cpu / {print}' /proc/stat)
+rx2=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") rx+=$2} END {print rx+0}' /proc/net/dev)
+tx2=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") tx+=$10} END {print tx+0}' /proc/net/dev)
+
 cpu_percent=$(awk -v a="$cpu_line_1" -v b="$cpu_line_2" '
 BEGIN {
   split(a, x, " "); split(b, y, " ");
@@ -31,12 +40,6 @@ BEGIN {
   if (dt <= 0) print 0; else printf "%.2f", (dt-di)*100/dt;
 }')
 cpu_cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || awk -F': ' '/^processor/ {count++} END {print count+0}' /proc/cpuinfo 2>/dev/null || echo 0)
-
-rx1=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") rx+=$2} END {print rx+0}' /proc/net/dev)
-tx1=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") tx+=$10} END {print tx+0}' /proc/net/dev)
-sleep 1
-rx2=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") rx+=$2} END {print rx+0}' /proc/net/dev)
-tx2=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") tx+=$10} END {print tx+0}' /proc/net/dev)
 rx_rate=$((rx2-rx1))
 tx_rate=$((tx2-tx1))
 
@@ -82,4 +85,31 @@ printf '"cpu_model":"%s",' "$cpu_model"
 printf '"gpu_model":"%s",' "$gpu_model"
 printf '"region":"%s"' "$(printf '%s' "$region" | sed 's/"/\\"/g')"
 printf '}'
+printf '\n'
+}
+
+serve_with_socat() {
+  exec socat TCP-LISTEN:"$port",reuseaddr,fork SYSTEM:"/usr/local/bin/ovdash-agent once"
+}
+
+serve_with_nc() {
+  while true; do
+    collect_once | nc -l -p "$port" -q 1
+  done
+}
+
+if [ "$mode" = "once" ]; then
+  collect_once
+  exit 0
+fi
+
+if command -v socat >/dev/null 2>&1; then
+  serve_with_socat
+fi
+if command -v nc >/dev/null 2>&1; then
+  serve_with_nc
+fi
+
+echo "ovdash-agent requires socat or nc" >&2
+exit 1
 `

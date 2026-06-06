@@ -27,7 +27,6 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -66,7 +65,7 @@ export function ServerStatus() {
   const servers = useQuery({
     queryKey: ['server-connections'],
     queryFn: listServerConnections,
-    refetchInterval: 3_000,
+    refetchInterval: 1_000,
   })
 
   const items = servers.data ?? []
@@ -327,10 +326,14 @@ function ServerCard({
         />
       </div>
 
-      <div className='mt-4 flex items-center justify-between gap-3 text-xs text-muted-foreground'>
+      <div className='mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-xs text-muted-foreground'>
         <span className='truncate'>到期: {formatDate(server.expires_at)}</span>
         <span className='h-4 w-px bg-border' />
-        <span className='truncate'>{cardStatusText(server)}</span>
+        <span className='truncate text-right'>
+          {server.last_collected_at
+            ? formatTime(server.last_collected_at)
+            : cardStatusText(server)}
+        </span>
       </div>
     </article>
   )
@@ -432,7 +435,7 @@ function ServerStatsDialog({
     queryKey: ['server-metrics', server?.id, range],
     queryFn: () => listServerMetrics(server!.id, range),
     enabled: !!server,
-    refetchInterval: range === '1h' ? 3_000 : 30_000,
+    refetchInterval: range === '1h' ? 1_000 : 30_000,
   })
   const points = useMemo(
     () => (metrics.data ?? []).map(toChartPoint),
@@ -449,17 +452,6 @@ function ServerStatsDialog({
           <DialogTitle>{server?.name ?? '负载统计'}</DialogTitle>
         </DialogHeader>
         <div className='relative space-y-4 p-6'>
-          <DialogClose asChild>
-            <Button
-              type='button'
-              variant='ghost'
-              size='icon'
-              className='absolute top-4 right-4'
-              aria-label='关闭'
-            >
-              ×
-            </Button>
-          </DialogClose>
           <div className='flex items-center justify-center'>
             <div className='inline-flex rounded-md border bg-muted/60 p-1'>
               {[
@@ -903,6 +895,15 @@ function formatDate(value: string | null) {
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatTime(value: string) {
+  return new Date(value).toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
 }
 
 function formatDuration(seconds: number) {

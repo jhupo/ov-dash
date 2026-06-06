@@ -1,11 +1,13 @@
 package servers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -60,19 +62,63 @@ func (c *Collector) Collect(ctx context.Context, id string) error {
 }
 
 func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error) {
-	start := time.Now()
+	if err := c.installAgent(ctx, item); err != nil {
+		return Metric{}, err
+	}
+	return c.collectFromAgent(ctx, item)
+}
+
+func (c *Collector) installAgent(ctx context.Context, item Connection) error {
 	client, err := c.connect(ctx, item)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if err := runSSH(ctx, client, installCommand(item.AgentPort)); err != nil {
+		return err
+	}
+	return c.waitForAgent(ctx, item)
+}
+
+func (c *Collector) waitForAgent(ctx context.Context, item Connection) error {
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		conn, err := c.dialAgent(ctx, item)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	return lastErr
+}
+
+func (c *Collector) collectFromAgent(ctx context.Context, item Connection) (Metric, error) {
+	port := item.AgentPort
+	if port == 0 {
+		port = 19087
+	}
+
+	start := time.Now()
+	conn, err := c.dialAgent(ctx, item)
 	if err != nil {
 		return Metric{}, err
 	}
-	defer client.Close()
+	defer conn.Close()
 	latencyMS := float64(time.Since(start).Microseconds()) / 1000
 
-	if err := runSSH(ctx, client, installCommand()); err != nil {
+	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+	if _, err := io.WriteString(conn, "metrics\n"); err != nil {
 		return Metric{}, err
 	}
 
-	output, err := outputSSH(ctx, client, agentPath)
+	output, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
 		return Metric{}, err
 	}
@@ -85,6 +131,61 @@ func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error
 	metric := payload.metric(item.ID, time.Now().UTC())
 	metric.LatencyMS = latencyMS
 	return metric, nil
+}
+
+func (c *Collector) dialAgent(ctx context.Context, item Connection) (net.Conn, error) {
+	port := item.AgentPort
+	if port == 0 {
+		port = 19087
+	}
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	return dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", item.Host, port))
+}
+
+func (c *Collector) CollectAgentLoop(ctx context.Context, id string) error {
+	item, err := c.repository.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
+		return err
+	}
+
+	metric, err := c.collectFromAgent(ctx, item)
+	if err != nil {
+		if err := c.installAgent(ctx, item); err != nil {
+			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+			return err
+		}
+		metric, err = c.collectFromAgent(ctx, item)
+		if err != nil {
+			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+			return err
+		}
+	}
+	if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
+		return err
+	}
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		metric, err := c.collectFromAgent(ctx, item)
+		if err != nil {
+			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+			return err
+		}
+		if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (c *Collector) connect(ctx context.Context, item Connection) (*ssh.Client, error) {
@@ -179,8 +280,37 @@ func outputSSH(ctx context.Context, client *ssh.Client, command string) (string,
 	}
 }
 
-func installCommand() string {
-	return fmt.Sprintf("cat > %s <<'OVDASH_AGENT'\n%s\nOVDASH_AGENT\nchmod 0755 %s", agentPath, agentScript, agentPath)
+func installCommand(port int) string {
+	if port == 0 {
+		port = 19087
+	}
+	return fmt.Sprintf(`cat > %[1]s <<'OVDASH_AGENT'
+%[2]s
+OVDASH_AGENT
+chmod 0755 %[1]s
+if command -v apt-get >/dev/null 2>&1 && ! command -v socat >/dev/null 2>&1; then apt-get update >/dev/null 2>&1 && apt-get install -y socat >/dev/null 2>&1 || true; fi
+if command -v yum >/dev/null 2>&1 && ! command -v socat >/dev/null 2>&1; then yum install -y socat >/dev/null 2>&1 || true; fi
+if command -v dnf >/dev/null 2>&1 && ! command -v socat >/dev/null 2>&1; then dnf install -y socat >/dev/null 2>&1 || true; fi
+cat > /etc/systemd/system/ovdash-agent.service <<'OVDASH_SERVICE'
+[Unit]
+Description=OV Dash TCP metrics agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=OVDASH_AGENT_PORT=%[3]d
+ExecStart=%[1]s serve
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+OVDASH_SERVICE
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable --now ovdash-agent.service >/dev/null 2>&1 || true
+systemctl restart ovdash-agent.service >/dev/null 2>&1 || true
+`, agentPath, agentScript, port)
 }
 
 func trimError(err error) string {

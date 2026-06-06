@@ -98,7 +98,7 @@ func (r *Runner) loop(ctx context.Context, workerID int) {
 
 		r.publishJobEvent(ctx, "job.started", *job, map[string]any{"worker_id": workerID})
 
-		jobCtx, cancel := context.WithTimeout(ctx, r.runtime.Config.Worker.JobTimeout)
+		jobCtx, cancel := r.jobContext(ctx, job.Type)
 		err = handler.Handle(jobCtx, *job)
 		cancel()
 
@@ -120,6 +120,13 @@ func (r *Runner) publishJobEvent(ctx context.Context, eventType string, job queu
 	payload["job_id"] = job.ID
 	payload["job_type"] = job.Type
 	r.runtime.Events.Publish(ctx, events.New(eventType, "worker.runner", payload))
+}
+
+func (r *Runner) jobContext(ctx context.Context, jobType string) (context.Context, context.CancelFunc) {
+	if jobType == "server.collect" {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, r.runtime.Config.Worker.JobTimeout)
 }
 
 func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {
@@ -160,7 +167,7 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 			Status:      "todo",
 			Label:       "server",
 			Priority:    "medium",
-			Description: "等待事件队列分发采集任务",
+			Description: "等待事件队列分发 Agent 连接任务",
 			Assignee:    item.ConnectionHint(),
 		}); err != nil {
 			r.runtime.Logger.Error("create server collect task", zap.String("server_id", item.ID), zap.Error(err))
