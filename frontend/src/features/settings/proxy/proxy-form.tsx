@@ -19,32 +19,24 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
 
-const proxyFormSchema = z
-  .object({
-    enabled: z.boolean(),
-    host: z.string().trim(),
-    port: z
-      .string()
-      .trim()
-      .refine((value) => {
-        const port = Number(value)
-        return Number.isInteger(port) && port >= 1 && port <= 65535
-      }, '端口必须在 1 到 65535 之间。'),
-    username: z.string().trim(),
-    password: z.string(),
-    clearPassword: z.boolean(),
-  })
-  .refine((data) => !data.enabled || data.host.length > 0, {
-    message: '启用代理后必须填写主机地址。',
-    path: ['host'],
-  })
+const proxyFormSchema = z.object({
+  host: z.string().trim(),
+  port: z
+    .string()
+    .trim()
+    .refine((value) => {
+      const port = Number(value)
+      return Number.isInteger(port) && port >= 1 && port <= 65535
+    }, '端口必须在 1 到 65535 之间。'),
+  username: z.string().trim(),
+  password: z.string(),
+  clearPassword: z.boolean(),
+})
 
 type ProxyFormValues = z.infer<typeof proxyFormSchema>
 
 const defaultValues: ProxyFormValues = {
-  enabled: false,
   host: '',
   port: '1080',
   username: '',
@@ -68,7 +60,6 @@ export function ProxyForm() {
     if (!proxySettings.data) return
 
     form.reset({
-      enabled: proxySettings.data.enabled,
       host: proxySettings.data.host,
       port: String(proxySettings.data.port || 1080),
       username: proxySettings.data.username,
@@ -90,9 +81,11 @@ export function ProxyForm() {
   })
 
   function onSubmit(data: ProxyFormValues) {
+    const host = data.host.trim()
+
     mutation.mutate({
-      enabled: data.enabled,
-      host: data.host.trim(),
+      enabled: host.length > 0,
+      host,
       port: Number(data.port),
       username: data.username.trim(),
       ...(data.password ? { password: data.password } : {}),
@@ -102,25 +95,8 @@ export function ProxyForm() {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-6'>
-        <FormField
-          control={form.control}
-          name='enabled'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-4'>
-              <FormLabel>启用 SOCKS5 代理</FormLabel>
-              <FormControl>
-                <Switch
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                  aria-label='启用 SOCKS5 代理'
-                />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-
-        <div className='grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]'>
+      <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-5'>
+        <div className='grid gap-4 md:grid-cols-[minmax(0,1fr)_10rem]'>
           <FormField
             control={form.control}
             name='host'
@@ -155,7 +131,7 @@ export function ProxyForm() {
           />
         </div>
 
-        <div className='grid gap-4 sm:grid-cols-2'>
+        <div className='grid gap-4 md:grid-cols-2'>
           <FormField
             control={form.control}
             name='username'

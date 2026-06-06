@@ -5,6 +5,7 @@ type ContentSectionProps = {
   desc: string
   children: React.JSX.Element
   showHeader?: boolean
+  size?: 'default' | 'wide'
 }
 
 export function ContentSection({
@@ -12,6 +13,7 @@ export function ContentSection({
   desc,
   children,
   showHeader = false,
+  size = 'default',
 }: ContentSectionProps) {
   return (
     <div className='flex flex-1 flex-col'>
@@ -24,8 +26,16 @@ export function ContentSection({
           <Separator className='my-4 flex-none' />
         </>
       )}
-      <div className='faded-bottom h-full w-full overflow-y-auto scroll-smooth pe-4 pb-12'>
-        <div className='-mx-1 px-1.5 lg:max-w-xl'>{children}</div>
+      <div className='faded-bottom h-full w-full overflow-y-auto scroll-smooth px-1 pb-12'>
+        <div
+          className={
+            size === 'wide'
+              ? 'mx-auto w-full max-w-4xl'
+              : 'mx-auto w-full max-w-2xl'
+          }
+        >
+          {children}
+        </div>
       </div>
     </div>
   )

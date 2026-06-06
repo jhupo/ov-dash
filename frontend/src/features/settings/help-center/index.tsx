@@ -6,6 +6,7 @@ export function SettingsHelpCenter() {
     <ContentSection
       title='帮助中心设置'
       desc='编辑帮助中心展示的 Markdown 文档内容。'
+      size='wide'
     >
       <HelpCenterForm />
     </ContentSection>

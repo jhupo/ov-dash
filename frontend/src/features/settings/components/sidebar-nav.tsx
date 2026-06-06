@@ -17,7 +17,7 @@ export function SidebarNav({ className, items, ...props }: SidebarNavProps) {
   return (
     <nav
       className={cn(
-        'flex w-full gap-2 overflow-x-auto border-b pb-2',
+        'mx-auto flex w-full max-w-4xl gap-2 overflow-x-auto border-b pb-2',
         className
       )}
       {...props}
