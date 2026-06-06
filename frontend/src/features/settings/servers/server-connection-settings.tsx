@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { ClipboardEvent, KeyboardEvent, ReactNode } from 'react'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -70,7 +70,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Textarea } from '@/components/ui/textarea'
 
 const formSchema = z.object({
   name: z.string().trim().min(1, '请输入名称。'),
@@ -360,28 +359,29 @@ function ServerTerminalDialog({
   server: ServerConnection | null
   onOpenChange: (open: boolean) => void
 }) {
-  const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
   const [status, setStatus] = useState<'idle' | 'connecting' | 'open' | 'closed'>(
     'idle'
   )
   const socketRef = useRef<WebSocket | null>(null)
-  const outputRef = useRef<HTMLTextAreaElement | null>(null)
+  const terminalRef = useRef<HTMLDivElement | null>(null)
+  const commandBufferRef = useRef('')
 
   useEffect(() => {
     if (!server) return
     const socket = new WebSocket(buildWebSSHUrl(server.id))
     socketRef.current = socket
-    setInput('')
     setOutput('')
     setStatus('connecting')
+    commandBufferRef.current = ''
 
     socket.onopen = () => {
       setStatus('open')
+      window.setTimeout(() => terminalRef.current?.focus(), 0)
     }
     socket.onmessage = (event) => {
       const message = String(event.data)
-      setOutput((current) => current + message)
+      setOutput((current) => applyTerminalOutput(current, message))
       if (
         message.includes('连接失败') ||
         message.includes('打开输入失败') ||
@@ -394,7 +394,7 @@ function ServerTerminalDialog({
     }
     socket.onerror = () => {
       const message = 'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
-      setOutput((current) => current + `\r\n${message}\r\n`)
+      setOutput((current) => applyTerminalOutput(current, `\r\n${message}\r\n`))
       toast.error(message)
     }
     socket.onclose = () => {
@@ -408,24 +408,63 @@ function ServerTerminalDialog({
   }, [server])
 
   useEffect(() => {
-    const element = outputRef.current
+    const element = terminalRef.current
     if (element) {
       element.scrollTop = element.scrollHeight
     }
   }, [output])
 
-  function sendInput() {
+  function sendTerminalData(data: string) {
     const socket = socketRef.current
-    if (!input || !socket || socket.readyState !== WebSocket.OPEN) return
-    socket.send(input + '\n')
-    setInput('')
+    if (!data || !socket || socket.readyState !== WebSocket.OPEN) return
+    socket.send(data)
+  }
+
+  function handleTerminalKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.metaKey || event.altKey) return
+
+    if (event.ctrlKey) {
+      const code = controlCode(event.key)
+      if (!code) return
+      event.preventDefault()
+      if (event.key.toLowerCase() === 'l') {
+        setOutput('')
+      }
+      sendTerminalData(code)
+      return
+    }
+
+    const sequence = keySequence(event.key)
+    if (sequence) {
+      event.preventDefault()
+      if (event.key === 'Enter') {
+        commandBufferRef.current = ''
+      } else if (event.key === 'Backspace') {
+        commandBufferRef.current = commandBufferRef.current.slice(0, -1)
+      }
+      sendTerminalData(sequence)
+      return
+    }
+
+    if (event.key.length === 1) {
+      event.preventDefault()
+      commandBufferRef.current += event.key
+      sendTerminalData(event.key)
+    }
+  }
+
+  function handleTerminalPaste(event: ClipboardEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const text = event.clipboardData.getData('text')
+    commandBufferRef.current += text
+    sendTerminalData(text)
   }
 
   return (
     <Dialog open={!!server} onOpenChange={onOpenChange}>
-      <DialogContent className='max-h-[92vh] overflow-y-auto sm:max-w-4xl'>
+      <DialogContent className='max-h-[92vh] overflow-y-auto p-0 sm:max-w-5xl'>
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className='px-5 pt-5'>
             SSH - {server?.connection_hint}
             <span className='ml-3 text-xs font-normal text-muted-foreground'>
               {status === 'connecting'
@@ -438,34 +477,18 @@ function ServerTerminalDialog({
             </span>
           </DialogTitle>
         </DialogHeader>
-        <div className='space-y-3'>
-          <Textarea
-            ref={outputRef}
-            readOnly
-            value={output || '正在连接 SSH...'}
-            className='min-h-[420px] resize-none bg-black font-mono text-xs text-green-100'
-          />
-          <div className='flex gap-2'>
-            <Input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  sendInput()
-                }
-              }}
-              className='font-mono'
-              placeholder='输入命令，回车发送'
-            />
-            <Button
-              type='button'
-              disabled={status !== 'open'}
-              onClick={sendInput}
-            >
-              <Terminal />
-              发送
-            </Button>
+        <div className='px-5 pb-5'>
+          <div
+            ref={terminalRef}
+            tabIndex={0}
+            role='textbox'
+            aria-label='SSH 终端'
+            onKeyDown={handleTerminalKeyDown}
+            onPaste={handleTerminalPaste}
+            onClick={() => terminalRef.current?.focus()}
+            className='h-[min(68vh,640px)] overflow-auto rounded-md border bg-[#050816] p-4 font-mono text-[13px] leading-5 whitespace-pre text-cyan-50 shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+          >
+            {output || (status === 'connecting' ? '正在连接 SSH...' : '')}
           </div>
         </div>
       </DialogContent>
@@ -479,6 +502,66 @@ function buildWebSSHUrl(id: string) {
   base.pathname = `${base.pathname.replace(/\/$/, '')}/server-connections/${id}/ssh/ws`
   base.search = ''
   return base.toString()
+}
+
+function applyTerminalOutput(current: string, raw: string) {
+  let next = hasClearSequence(raw) ? '' : current
+  let text = stripTerminalControl(raw)
+  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+  for (const char of text) {
+    if (char === '\b' || char === '\u007f') {
+      next = next.slice(0, -1)
+    } else {
+      next += char
+    }
+  }
+
+  if (next.length > 80_000) {
+    return next.slice(-60_000)
+  }
+  return next
+}
+
+function hasClearSequence(raw: string) {
+  return /\x1bc|\x1b\[[0-?]*[ -/]*[23]?J|\x1b\[[0-?]*[ -/]*H/.test(raw)
+}
+
+function stripTerminalControl(raw: string) {
+  return raw
+    .replace(/(?:\x1b|\ufffd)?\]3008;[\s\S]*?(?:\x07|\x1b\\|\ufffd\\)/g, '')
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[()][A-Za-z0-9]/g, '')
+    .replace(/\ufffd/g, '')
+    .replace(/[\x00-\x07\x0b\x0c\x0e-\x1f]/g, '')
+}
+
+function keySequence(key: string) {
+  const sequences: Record<string, string> = {
+    Enter: '\r',
+    Backspace: '\u007f',
+    Tab: '\t',
+    Escape: '\u001b',
+    ArrowUp: '\u001b[A',
+    ArrowDown: '\u001b[B',
+    ArrowRight: '\u001b[C',
+    ArrowLeft: '\u001b[D',
+    Home: '\u001b[H',
+    End: '\u001b[F',
+    Delete: '\u001b[3~',
+    PageUp: '\u001b[5~',
+    PageDown: '\u001b[6~',
+  }
+  return sequences[key] ?? ''
+}
+
+function controlCode(key: string) {
+  const value = key.toLowerCase()
+  if (value.length !== 1) return ''
+  const code = value.charCodeAt(0)
+  if (code < 97 || code > 122) return ''
+  return String.fromCharCode(code - 96)
 }
 
 function ServerConnectionDialog({
