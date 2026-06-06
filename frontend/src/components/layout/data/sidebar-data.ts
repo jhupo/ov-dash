@@ -64,6 +64,11 @@ export const sidebarData: SidebarData = {
               url: '/settings/proxy',
               icon: Route,
             },
+            {
+              title: '帮助中心',
+              url: '/settings/help-center',
+              icon: HelpCircle,
+            },
           ],
         },
         {

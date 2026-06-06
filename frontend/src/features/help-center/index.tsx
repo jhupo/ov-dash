@@ -32,15 +32,7 @@ export function HelpCenter() {
       </Header>
 
       <Main fixed>
-        <div className='space-y-0.5'>
-          <h1 className='text-2xl font-bold tracking-tight md:text-3xl'>
-            帮助中心
-          </h1>
-          <p className='text-muted-foreground'>
-            查看系统使用说明、图片资料和流程文档。
-          </p>
-        </div>
-        <div className='faded-bottom mt-6 flex-1 overflow-y-auto scroll-smooth pb-12'>
+        <div className='faded-bottom flex-1 overflow-y-auto scroll-smooth pb-12'>
           <MarkdownViewer markdown={markdown} />
         </div>
       </Main>
