@@ -2,9 +2,10 @@
 
 import { useState } from 'react'
 import { type Table } from '@tanstack/react-table'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
-import { sleep } from '@/lib/utils'
+import { deleteTasks } from '@/services/tasks'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,8 +25,21 @@ export function TasksMultiDeleteDialog<TData>({
   table,
 }: TaskMultiDeleteDialogProps<TData>) {
   const [value, setValue] = useState('')
+  const queryClient = useQueryClient()
 
   const selectedRows = table.getFilteredSelectedRowModel().rows
+  const deleteMutation = useMutation({
+    mutationFn: deleteTasks,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      setValue('')
+      table.resetRowSelection()
+      toast.success(`已删除 ${selectedRows.length} 个任务`)
+    },
+    onError: () => {
+      toast.error('任务删除失败')
+    },
+  })
 
   const handleDelete = () => {
     if (value.trim() !== CONFIRM_WORD) {
@@ -33,17 +47,9 @@ export function TasksMultiDeleteDialog<TData>({
       return
     }
 
+    const ids = selectedRows.map((row) => (row.original as { id: string }).id)
     onOpenChange(false)
-
-    toast.promise(sleep(2000), {
-      loading: '正在删除任务...',
-      success: () => {
-        setValue('')
-        table.resetRowSelection()
-        return `已删除 ${selectedRows.length} 个任务`
-      },
-      error: '错误',
-    })
+    deleteMutation.mutate(ids)
   }
 
   return (

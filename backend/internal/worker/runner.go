@@ -8,7 +8,6 @@ import (
 
 	"ov-dash/backend/internal/events"
 	"ov-dash/backend/internal/modules/servers"
-	"ov-dash/backend/internal/modules/tasks"
 	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/internal/queue"
 
@@ -36,10 +35,9 @@ func NewRunner(deps RunnerDeps) *Runner {
 		"python.script": NewPythonScriptHandler(deps.Runtime.Config.Python, deps.Runtime.Logger),
 		"server.collect": NewServerCollectHandler(
 			servers.NewCollector(servers.NewRepository(deps.Runtime.DB)),
-			tasks.NewRepository(deps.Runtime.DB),
 			deps.Runtime.Logger,
 		),
-		"noop":          NoopHandler{},
+		"noop": NoopHandler{},
 	}
 	return r
 }
@@ -131,24 +129,23 @@ func (r *Runner) jobContext(ctx context.Context, jobType string) (context.Contex
 
 func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {
 	repository := servers.NewRepository(r.runtime.DB)
-	taskRepository := tasks.NewRepository(r.runtime.DB)
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	r.runtime.Logger.Info("server collector scheduler started")
-	r.scheduleServerCollections(ctx, repository, taskRepository)
+	r.scheduleServerCollections(ctx, repository)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.scheduleServerCollections(ctx, repository, taskRepository)
+			r.scheduleServerCollections(ctx, repository)
 		}
 	}
 }
 
-func (r *Runner) scheduleServerCollections(ctx context.Context, repository *servers.Repository, taskRepository *tasks.Repository) {
+func (r *Runner) scheduleServerCollections(ctx context.Context, repository *servers.Repository) {
 	items, err := repository.DueForCollection(ctx, 50)
 	if err != nil {
 		r.runtime.Logger.Error("list due server collections", zap.Error(err))
@@ -160,20 +157,6 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 			r.runtime.Logger.Error("create server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
 		}
-		taskID := serverCollectTaskID(item.ID)
-		if err := taskRepository.Upsert(ctx, tasks.UpsertInput{
-			ID:          taskID,
-			Title:       "采集服务器 " + item.Name,
-			Status:      "todo",
-			Label:       "server",
-			Priority:    "medium",
-			Description: "等待事件队列分发 Agent 连接任务",
-			Assignee:    item.ConnectionHint(),
-		}); err != nil {
-			r.runtime.Logger.Error("create server collect task", zap.String("server_id", item.ID), zap.Error(err))
-			continue
-		}
-		job.Payload["task_id"] = taskID
 		if err := r.runtime.Queue.Enqueue(ctx, r.runtime.Config.Worker.QueueName, job); err != nil {
 			r.runtime.Logger.Error("enqueue server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
@@ -183,12 +166,7 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 		}
 		r.runtime.Events.Publish(ctx, events.New("server.collect.enqueued", "worker.scheduler", map[string]any{
 			"job_id":    job.ID,
-			"task_id":   taskID,
 			"server_id": item.ID,
 		}))
 	}
-}
-
-func serverCollectTaskID(serverID string) string {
-	return "srvcol_" + serverID
 }

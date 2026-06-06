@@ -22,12 +22,12 @@ import { toast } from 'sonner'
 import {
   deleteServerConnection,
   listServerConnections,
-  runServerCommand,
   saveServerConnection,
   updateServerAgent,
   type ServerAuthType,
   type ServerConnection,
 } from '@/services/server-connections'
+import { apiConfig } from '@/config/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -351,76 +351,113 @@ function ServerTerminalDialog({
   server: ServerConnection | null
   onOpenChange: (open: boolean) => void
 }) {
-  const [command, setCommand] = useState('pwd')
+  const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
-  const commandMutation = useMutation({
-    mutationFn: (value: string) => runServerCommand(server!.id, value),
-    onSuccess: (data, value) => {
-      const text = data.output || data.error || ''
-      setOutput((current) =>
-        current + '$ ' + value + '\n' + text + (text.endsWith('\n') ? '' : '\n')
-      )
-    },
-    onError: (error, value) => {
-      setOutput((current) => current + '$ ' + value + '\n' + String(error) + '\n')
-    },
-  })
+  const [status, setStatus] = useState<'idle' | 'connecting' | 'open' | 'closed'>(
+    'idle'
+  )
+  const socketRef = useRef<WebSocket | null>(null)
+  const outputRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => {
-    if (server) {
-      setCommand('pwd')
-      setOutput('')
+    if (!server) return
+    const socket = new WebSocket(buildWebSSHUrl(server.id))
+    socketRef.current = socket
+    setInput('')
+    setOutput('')
+    setStatus('connecting')
+
+    socket.onopen = () => {
+      setStatus('open')
+    }
+    socket.onmessage = (event) => {
+      setOutput((current) => current + String(event.data))
+    }
+    socket.onerror = () => {
+      setOutput((current) => current + '\r\n连接异常。\r\n')
+    }
+    socket.onclose = () => {
+      setStatus('closed')
+    }
+
+    return () => {
+      socket.close()
+      socketRef.current = null
     }
   }, [server])
 
-  function runCommand() {
-    const value = command.trim()
-    if (!value || !server) return
-    commandMutation.mutate(value)
+  useEffect(() => {
+    const element = outputRef.current
+    if (element) {
+      element.scrollTop = element.scrollHeight
+    }
+  }, [output])
+
+  function sendInput() {
+    const socket = socketRef.current
+    if (!input || !socket || socket.readyState !== WebSocket.OPEN) return
+    socket.send(input + '\n')
+    setInput('')
   }
 
   return (
     <Dialog open={!!server} onOpenChange={onOpenChange}>
       <DialogContent className='max-h-[92vh] overflow-y-auto sm:max-w-4xl'>
         <DialogHeader>
-          <DialogTitle>SSH - {server?.connection_hint}</DialogTitle>
+          <DialogTitle>
+            SSH - {server?.connection_hint}
+            <span className='ml-3 text-xs font-normal text-muted-foreground'>
+              {status === 'connecting'
+                ? '连接中'
+                : status === 'open'
+                  ? '已连接'
+                  : status === 'closed'
+                    ? '已断开'
+                    : ''}
+            </span>
+          </DialogTitle>
         </DialogHeader>
         <div className='space-y-3'>
           <Textarea
+            ref={outputRef}
             readOnly
-            value={output || '输入命令后会在这里显示输出。'}
-            className='min-h-[360px] resize-none font-mono text-xs'
+            value={output || '正在连接 SSH...'}
+            className='min-h-[420px] resize-none bg-black font-mono text-xs text-green-100'
           />
           <div className='flex gap-2'>
             <Input
-              value={command}
-              onChange={(event) => setCommand(event.target.value)}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault()
-                  runCommand()
+                  sendInput()
                 }
               }}
               className='font-mono'
-              placeholder='输入命令，例如：uname -a'
+              placeholder='输入命令，回车发送'
             />
             <Button
               type='button'
-              disabled={commandMutation.isPending}
-              onClick={runCommand}
+              disabled={status !== 'open'}
+              onClick={sendInput}
             >
-              {commandMutation.isPending ? (
-                <Loader2 className='animate-spin' />
-              ) : (
-                <Terminal />
-              )}
-              执行
+              <Terminal />
+              发送
             </Button>
           </div>
         </div>
       </DialogContent>
     </Dialog>
   )
+}
+
+function buildWebSSHUrl(id: string) {
+  const base = new URL(apiConfig.baseURL, window.location.origin)
+  base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
+  base.pathname = `${base.pathname.replace(/\/$/, '')}/server-connections/${id}/ssh/ws`
+  base.search = ''
+  return base.toString()
 }
 
 function ServerConnectionDialog({

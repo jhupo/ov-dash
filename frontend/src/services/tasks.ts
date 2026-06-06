@@ -9,3 +9,7 @@ export async function getTasks(): Promise<Task[]> {
   const response = await httpClient.get<TasksResponse>('/tasks')
   return response.data.items
 }
+
+export async function deleteTasks(ids: string[]): Promise<void> {
+  await httpClient.delete('/tasks', { data: { ids } })
+}

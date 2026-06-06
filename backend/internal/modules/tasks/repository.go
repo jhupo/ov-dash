@@ -54,6 +54,14 @@ func (r *Repository) UpdateStatus(ctx context.Context, id string, status string,
 	return err
 }
 
+func (r *Repository) Delete(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := r.db.Exec(ctx, `DELETE FROM tasks WHERE id = ANY($1)`, ids)
+	return err
+}
+
 func (r *Repository) List(ctx context.Context) ([]Task, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, title, status, label, priority, description, assignee, due_date, created_at, updated_at

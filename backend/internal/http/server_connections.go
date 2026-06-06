@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -151,6 +152,87 @@ func (h *ServerConnectionsHandler) RunCommand(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"output": output})
+}
+
+func (h *ServerConnectionsHandler) Shell(w http.ResponseWriter, r *http.Request) {
+	ws, err := upgradeWebSocket(w, r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "websocket_upgrade_failed"})
+		return
+	}
+	defer ws.close()
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	client, session, err := h.collector.Shell(ctx, chi.URLParam(r, "id"))
+	if err != nil {
+		_ = ws.writeText("连接失败: " + err.Error() + "\r\n")
+		return
+	}
+	defer client.Close()
+	defer session.Close()
+
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		_ = ws.writeText("打开输入失败: " + err.Error() + "\r\n")
+		return
+	}
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		_ = ws.writeText("打开输出失败: " + err.Error() + "\r\n")
+		return
+	}
+	stderr, err := session.StderrPipe()
+	if err != nil {
+		_ = ws.writeText("打开错误输出失败: " + err.Error() + "\r\n")
+		return
+	}
+	if err := session.Shell(); err != nil {
+		_ = ws.writeText("启动 Shell 失败: " + err.Error() + "\r\n")
+		return
+	}
+
+	done := make(chan struct{})
+	stream := func(reader io.Reader) {
+		buffer := make([]byte, 4096)
+		for {
+			n, err := reader.Read(buffer)
+			if n > 0 {
+				if writeErr := ws.writeText(string(buffer[:n])); writeErr != nil {
+					cancel()
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	go stream(stdout)
+	go stream(stderr)
+	go func() {
+		defer close(done)
+		for {
+			text, err := ws.readText()
+			if err != nil {
+				cancel()
+				return
+			}
+			if text == "" {
+				continue
+			}
+			if _, err := io.WriteString(stdin, text); err != nil {
+				cancel()
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-done:
+	}
 }
 
 func (h *ServerConnectionsHandler) Delete(w http.ResponseWriter, r *http.Request) {

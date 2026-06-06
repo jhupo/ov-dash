@@ -94,6 +94,32 @@ func (c *Collector) RunCommand(ctx context.Context, id string, command string) (
 	return outputSSH(ctx, client, command)
 }
 
+func (c *Collector) Shell(ctx context.Context, id string) (*ssh.Client, *ssh.Session, error) {
+	item, err := c.repository.Get(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := c.connect(ctx, item)
+	if err != nil {
+		return nil, nil, err
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		client.Close()
+		return nil, nil, err
+	}
+	if err := session.RequestPty("xterm-256color", 40, 120, ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}); err != nil {
+		session.Close()
+		client.Close()
+		return nil, nil, err
+	}
+	return client, session, nil
+}
+
 func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error) {
 	if err := c.installAgent(ctx, item); err != nil {
 		return Metric{}, err

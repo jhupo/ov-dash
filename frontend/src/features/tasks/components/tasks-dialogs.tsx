@@ -1,4 +1,6 @@
-import { showSubmittedData } from '@/lib/show-submitted-data'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { deleteTasks } from '@/services/tasks'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { TasksImportDialog } from './tasks-import-dialog'
 import { TasksMutateDrawer } from './tasks-mutate-drawer'
@@ -6,6 +8,18 @@ import { useTasks } from './tasks-provider'
 
 export function TasksDialogs() {
   const { open, setOpen, currentRow, setCurrentRow } = useTasks()
+  const queryClient = useQueryClient()
+  const deleteMutation = useMutation({
+    mutationFn: deleteTasks,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      toast.success('任务已删除')
+    },
+    onError: () => {
+      toast.error('任务删除失败')
+    },
+  })
+
   return (
     <>
       <TasksMutateDrawer
@@ -45,14 +59,11 @@ export function TasksDialogs() {
               }, 500)
             }}
             handleConfirm={() => {
+              deleteMutation.mutate([currentRow.id])
               setOpen(null)
               setTimeout(() => {
                 setCurrentRow(null)
               }, 500)
-              showSubmittedData(
-                currentRow,
-                '已删除以下任务：'
-              )
             }}
             className='max-w-md'
             title={`删除此任务：${currentRow.id}？`}
