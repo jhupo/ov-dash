@@ -60,8 +60,8 @@ type ChartPoint = {
 
 export function ServerStatus() {
   const [activeGroup, setActiveGroup] = useState('全部')
-  const [detail, setDetail] = useState<ServerConnection | null>(null)
-  const [stats, setStats] = useState<ServerConnection | null>(null)
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [statsId, setStatsId] = useState<string | null>(null)
   const servers = useQuery({
     queryKey: ['server-connections'],
     queryFn: listServerConnections,
@@ -69,6 +69,14 @@ export function ServerStatus() {
   })
 
   const items = servers.data ?? []
+  const detail = useMemo(
+    () => items.find((item) => item.id === detailId) ?? null,
+    [detailId, items]
+  )
+  const stats = useMemo(
+    () => items.find((item) => item.id === statsId) ?? null,
+    [statsId, items]
+  )
   const groups = useMemo(() => {
     const names = new Set(items.map((item) => item.group_name || '默认'))
     return ['全部', ...Array.from(names)]
@@ -137,8 +145,8 @@ export function ServerStatus() {
                 <ServerCard
                   key={server.id}
                   server={server}
-                  onStats={() => setStats(server)}
-                  onDetail={() => setDetail(server)}
+                  onStats={() => setStatsId(server.id)}
+                  onDetail={() => setDetailId(server.id)}
                 />
               ))}
             </div>
@@ -155,8 +163,11 @@ export function ServerStatus() {
         </div>
       </Main>
 
-      <ServerDetailDialog server={detail} onOpenChange={() => setDetail(null)} />
-      <ServerStatsDialog server={stats} onOpenChange={() => setStats(null)} />
+      <ServerDetailDialog
+        server={detail}
+        onOpenChange={() => setDetailId(null)}
+      />
+      <ServerStatsDialog server={stats} onOpenChange={() => setStatsId(null)} />
     </>
   )
 }
@@ -267,7 +278,7 @@ function ServerCard({
             </button>
           </div>
           {metric ? (
-            <div className='mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground'>
+            <div className='mt-3 grid grid-cols-3 items-start gap-2 text-xs text-muted-foreground'>
               <IconValue icon={<Cpu />} value={cpuCoreText(metric)} />
               <IconValue icon={<MemoryStick />} value={memoryText(metric)} />
               <IconValue icon={<HardDrive />} value={diskText(metric)} />
@@ -697,9 +708,11 @@ function IconValue({
   value: string
 }) {
   return (
-    <span className='flex min-w-0 items-center gap-1'>
+    <span className='flex min-w-0 flex-col items-center justify-start gap-1 text-center'>
       <span className='[&_svg]:size-3.5 [&_svg]:text-primary'>{icon}</span>
-      <span className='truncate'>{value}</span>
+      <span className='w-full text-[11px] leading-tight break-words tabular-nums'>
+        {value}
+      </span>
     </span>
   )
 }
@@ -720,7 +733,9 @@ function ProgressRow({ row }: { row: MetricRow }) {
       <div className='h-3 overflow-hidden rounded-full bg-muted'>
         <div
           className={`h-full rounded-full ${toneClass}`}
-          style={{ width: `${Math.max(0, Math.min(100, row.percent))}%` }}
+          style={{
+            width: `${Math.max(row.percent > 0 ? 2 : 0, Math.min(100, row.percent))}%`,
+          }}
         />
       </div>
       <span className='text-right text-xs'>{row.value}</span>
