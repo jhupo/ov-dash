@@ -9,9 +9,17 @@ ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG NO_PROXY
 
 ENV GOPROXY=${GOPROXY} \
-    GOSUMDB=${GOSUMDB}
+    GOSUMDB=${GOSUMDB} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    ALL_PROXY=${ALL_PROXY} \
+    NO_PROXY=${NO_PROXY}
 
 WORKDIR /src/backend
 
@@ -35,6 +43,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM ${RUNTIME_IMAGE} AS runtime
 
 ARG APP_VERSION=local
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG NO_PROXY
 
 LABEL org.opencontainers.image.title="ov-dash-backend" \
       org.opencontainers.image.version="${APP_VERSION}" \
@@ -43,7 +55,11 @@ LABEL org.opencontainers.image.title="ov-dash-backend" \
 ENV APP_ENV=production \
     TZ=Asia/Shanghai \
     PYTHON_BIN=python3 \
-    PYTHON_SCRIPTS_DIR=/app/scripts
+    PYTHON_SCRIPTS_DIR=/app/scripts \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    ALL_PROXY=${ALL_PROXY} \
+    NO_PROXY=${NO_PROXY}
 
 RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git openssh-client python3 py3-pip tzdata wget \
     && addgroup -S app \

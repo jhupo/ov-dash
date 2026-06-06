@@ -10,6 +10,10 @@ x-backend-build: &backend-build
     GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     GOSUMDB: ${GOSUMDB:-sum.golang.google.cn}
     APP_VERSION: ${APP_VERSION:-local}
+    HTTP_PROXY: ${HTTP_PROXY:-}
+    HTTPS_PROXY: ${HTTPS_PROXY:-}
+    ALL_PROXY: ${ALL_PROXY:-}
+    NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres,redis,api,worker,frontend}
 
 x-backend-env: &backend-env
   APP_NAME: ${APP_NAME:-ov-dash}
@@ -39,6 +43,10 @@ x-backend-env: &backend-env
   PYTHON_BIN: python3
   PYTHON_SCRIPTS_DIR: /app/scripts
   TZ: ${TZ:-Asia/Shanghai}
+  HTTP_PROXY: ${HTTP_PROXY:-}
+  HTTPS_PROXY: ${HTTPS_PROXY:-}
+  ALL_PROXY: ${ALL_PROXY:-}
+  NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres,redis,api,worker,frontend}
 
 services:
   postgres:
@@ -143,6 +151,10 @@ services:
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
         VITE_ENABLE_DEVTOOLS: ${VITE_ENABLE_DEVTOOLS:-false}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres,redis,api,worker,frontend}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-80}:80"
