@@ -91,37 +91,37 @@ export function UpdateSwitch() {
           <span className='sr-only'>在线更新</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align='end' className='w-[420px] p-0'>
-        <div className='space-y-4 p-4'>
-          <div className='grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4'>
-            <div className='min-w-0 space-y-1'>
-              <div className='text-xs text-muted-foreground'>当前版本</div>
-              <div className='truncate font-mono text-base font-semibold tracking-normal'>
+      <DropdownMenuContent align='end' className='w-[288px] p-0'>
+        <div className='space-y-2.5 p-2.5'>
+          <div className='grid grid-cols-[minmax(0,1fr)_2rem] items-center gap-2'>
+            <div className='grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-md border bg-muted/20 px-2.5 py-2'>
+              <span className='text-xs text-muted-foreground'>当前版本</span>
+              <span className='truncate text-right font-mono text-sm font-semibold tracking-normal'>
                 {versionText(value)}
-              </div>
+              </span>
             </div>
             <Button
               type='button'
-              size='sm'
-              variant='outline'
-              className='min-w-20'
+              size='icon'
+              variant='ghost'
+              className='size-8'
               disabled={busy}
               onClick={() => checkMutation.mutate()}
+              aria-label='刷新版本'
             >
               <RefreshCw className={busy ? 'animate-spin' : undefined} />
-              刷新
             </Button>
           </div>
 
           {showUpdatePanel ? (
-            <div className='space-y-3 rounded-md border bg-muted/25 p-3'>
+            <div className='space-y-2.5 rounded-md border bg-muted/25 p-2.5'>
               {value?.hasUpdate && (
                 <div className='grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3'>
-                  <div className='min-w-0 space-y-1'>
-                    <div className='text-xs text-muted-foreground'>更新版本</div>
-                    <div className='truncate font-mono text-sm font-semibold'>
+                  <div className='grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2'>
+                    <span className='text-xs text-muted-foreground'>更新版本</span>
+                    <span className='truncate text-right font-mono text-sm font-semibold'>
                       {value.latestVersion}
-                    </div>
+                    </span>
                   </div>
                   {!isActiveUpdate(update) && update?.status !== 'ready' && (
                     <Button
@@ -152,10 +152,8 @@ export function UpdateSwitch() {
               )}
             </div>
           ) : (
-            <div className='rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground'>
-              {value?.checkedAt
-                ? `已检查，当前是最新版本。${formatDateTime(value.checkedAt)}`
-                : '点击刷新检查新版本。'}
+            <div className='text-right text-xs text-muted-foreground'>
+              {value?.checkedAt ? formatDateTime(value.checkedAt) : '未检查'}
             </div>
           )}
         </div>
