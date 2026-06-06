@@ -45,7 +45,7 @@ ENV APP_ENV=production \
     PYTHON_BIN=python3 \
     PYTHON_SCRIPTS_DIR=/app/scripts
 
-RUN apk add --no-cache ca-certificates python3 py3-pip tzdata wget \
+RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git openssh-client python3 py3-pip tzdata wget \
     && addgroup -S app \
     && adduser -S -D -H -h /app -s /sbin/nologin -G app app \
     && mkdir -p /app/scripts \

@@ -12,6 +12,7 @@ import (
 	"ov-dash/backend/internal/modules/dashboard"
 	"ov-dash/backend/internal/modules/servers"
 	"ov-dash/backend/internal/modules/tasks"
+	"ov-dash/backend/internal/modules/updates"
 	"ov-dash/backend/internal/modules/users"
 	"ov-dash/backend/internal/platform"
 
@@ -38,6 +39,7 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 		proxySettings := NewProxySettingsHandler(runtime.Proxy)
 		authService := auth.NewService(auth.NewRepository(runtime.DB))
 		authHandler := NewAuthHandler(authService)
+		updatesHandler := NewUpdatesHandler(updates.NewService(runtime.Config, runtime.Logger))
 		serverRepository := servers.NewRepository(runtime.DB)
 		serverConnections := NewServerConnectionsHandler(
 			servers.NewService(serverRepository),
@@ -53,6 +55,9 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 			r.Post("/auth/logout", authHandler.Logout)
 			r.Get("/auth/me", authHandler.Me)
 			r.Put("/auth/password", authHandler.ChangePassword)
+			r.Get("/updates", updatesHandler.Status)
+			r.Post("/updates/check", updatesHandler.Check)
+			r.Post("/updates/apply", updatesHandler.Update)
 			r.Get("/platform", NewPlatformHandler(runtime).Status)
 			r.Post("/jobs", NewJobsHandler(runtime).Create)
 			r.Get("/dashboard", NewDashboardHandler(dashboard.NewService()).Snapshot)

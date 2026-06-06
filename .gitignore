@@ -37,6 +37,7 @@ var/
 .codex_deps/
 .ssh_deps/
 ov-dash-deploy.tar.gz
+.ovdash-update-status.json
 
 # Frontend
 node_modules/

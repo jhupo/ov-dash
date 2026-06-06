@@ -14,10 +14,16 @@ x-backend-build: &backend-build
 x-backend-env: &backend-env
   APP_NAME: ${APP_NAME:-ov-dash}
   APP_ENV: ${APP_ENV:-production}
+  APP_VERSION: ${APP_VERSION:-local}
   APP_SHUTDOWN_TIMEOUT: ${APP_SHUTDOWN_TIMEOUT:-15s}
   HTTP_HOST: 0.0.0.0
   HTTP_PORT: 8080
   HTTP_ALLOWED_ORIGINS: ${HTTP_ALLOWED_ORIGINS:-http://localhost,http://192.168.2.17}
+  UPDATE_WORKDIR: ${UPDATE_WORKDIR:-/opt/ov-dash}
+  UPDATE_REMOTE: ${UPDATE_REMOTE:-origin}
+  UPDATE_IMAGE: ${UPDATE_IMAGE:-ov-dash-backend:${APP_VERSION:-local}}
+  UPDATE_PROJECT: ${UPDATE_PROJECT:-ov-dash}
+  UPDATE_ENABLED: ${UPDATE_ENABLED:-true}
   POSTGRES_DSN: postgres://${POSTGRES_USER:-ov_dash}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-ov_dash}?sslmode=disable
   POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-20}
   POSTGRES_MIN_CONNS: ${POSTGRES_MIN_CONNS:-2}
@@ -82,6 +88,7 @@ services:
     image: ov-dash-backend:${APP_VERSION:-local}
     build: *backend-build
     command: ["/app/api"]
+    user: "0:0"
     restart: unless-stopped
     env_file:
       - .env
@@ -91,6 +98,8 @@ services:
       - "${HTTP_PORT:-8080}:8080"
     volumes:
       - ./backend/migrations:/migrations:ro
+      - ./:/opt/ov-dash
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
