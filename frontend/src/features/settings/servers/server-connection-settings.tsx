@@ -1,5 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
-import type { ClipboardEvent, KeyboardEvent, ReactNode } from 'react'
+import {
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -17,7 +23,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 import {
   deleteServerConnection,
@@ -371,9 +377,11 @@ function ServerTerminalDialog({
     if (!server) return
     const socket = new WebSocket(buildWebSSHUrl(server.id))
     socketRef.current = socket
-    setOutput('')
-    setStatus('connecting')
     commandBufferRef.current = ''
+    queueMicrotask(() => {
+      setOutput('')
+      setStatus('connecting')
+    })
 
     socket.onopen = () => {
       setStatus('open')
@@ -524,17 +532,58 @@ function applyTerminalOutput(current: string, raw: string) {
 }
 
 function hasClearSequence(raw: string) {
-  return /\x1bc|\x1b\[[0-?]*[ -/]*[23]?J|\x1b\[[0-?]*[ -/]*H/.test(raw)
+  return (
+    raw.includes(`${ESC}c`) ||
+    matchesAnsiCommand(raw, 'J') ||
+    matchesAnsiCommand(raw, 'H')
+  )
 }
 
 function stripTerminalControl(raw: string) {
   return raw
-    .replace(/(?:\x1b|\ufffd)?\]3008;[\s\S]*?(?:\x07|\x1b\\|\ufffd\\)/g, '')
-    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[()][A-Za-z0-9]/g, '')
+    .replace(OSC_3008_RE, '')
+    .replace(OSC_RE, '')
+    .replace(CSI_RE, '')
+    .replace(CHARSET_RE, '')
     .replace(/\ufffd/g, '')
-    .replace(/[\x00-\x07\x0b\x0c\x0e-\x1f]/g, '')
+    .replace(CONTROL_RE, '')
+}
+
+const ESC = String.fromCharCode(27)
+const BEL = String.fromCharCode(7)
+const CONTROL_CHARS = [
+  ...Array.from({ length: 8 }, (_, index) => String.fromCharCode(index)),
+  String.fromCharCode(11),
+  String.fromCharCode(12),
+  ...Array.from({ length: 18 }, (_, index) => String.fromCharCode(index + 14)),
+].join('')
+const OSC_3008_RE = new RegExp(
+  `(?:${escapeRegExp(ESC)}|\\ufffd)?\\]3008;[\\s\\S]*?(?:${escapeRegExp(BEL)}|${escapeRegExp(ESC)}\\\\|\\ufffd\\\\)`,
+  'g'
+)
+const OSC_RE = new RegExp(
+  `${escapeRegExp(ESC)}\\][\\s\\S]*?(?:${escapeRegExp(BEL)}|${escapeRegExp(ESC)}\\\\)`,
+  'g'
+)
+const CSI_RE = new RegExp(`${escapeRegExp(ESC)}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const CHARSET_RE = new RegExp(`${escapeRegExp(ESC)}[()][A-Za-z0-9]`, 'g')
+const CONTROL_RE = new RegExp(`[${escapeRegExp(CONTROL_CHARS)}]`, 'g')
+
+function matchesAnsiCommand(raw: string, command: 'H' | 'J') {
+  const prefix = `${ESC}[`
+  let index = raw.indexOf(prefix)
+  while (index >= 0) {
+    const end = raw.indexOf(command, index + prefix.length)
+    if (end < 0) return false
+    const body = raw.slice(index + prefix.length, end)
+    if (/^[0-?]*[ -/]*[23]?$/.test(body)) return true
+    index = raw.indexOf(prefix, index + 1)
+  }
+  return false
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function keySequence(key: string) {
@@ -582,8 +631,8 @@ function ServerConnectionDialog({
     resolver: zodResolver(formSchema),
     defaultValues,
   })
-  const authType = form.watch('auth_type')
-  const keyFileName = form.watch('key_file_name')
+  const authType = useWatch({ control: form.control, name: 'auth_type' })
+  const keyFileName = useWatch({ control: form.control, name: 'key_file_name' })
 
   useEffect(() => {
     if (!open) return

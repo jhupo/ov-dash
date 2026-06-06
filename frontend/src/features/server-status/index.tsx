@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -77,7 +76,7 @@ export function ServerStatus() {
     return () => window.clearInterval(timer)
   }, [])
 
-  const items = servers.data ?? []
+  const items = useMemo(() => servers.data ?? [], [servers.data])
   const detail = useMemo(
     () => items.find((item) => item.id === detailId) ?? null,
     [detailId, items]
