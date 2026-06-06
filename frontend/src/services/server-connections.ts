@@ -29,6 +29,8 @@ export type ServerConnection = {
 export type ServerMetric = {
   server_id: string
   cpu_percent: number
+  cpu_cores: number
+  latency_ms: number
   memory_used_bytes: number
   memory_total_bytes: number
   swap_used_bytes: number

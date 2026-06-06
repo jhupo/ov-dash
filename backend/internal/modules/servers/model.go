@@ -28,6 +28,8 @@ type Connection struct {
 type Metric struct {
 	ServerID         string         `json:"server_id"`
 	CPUPercent      float64        `json:"cpu_percent"`
+	CPUCores        int64          `json:"cpu_cores"`
+	LatencyMS       float64        `json:"latency_ms"`
 	MemoryUsedBytes int64          `json:"memory_used_bytes"`
 	MemoryTotalBytes int64         `json:"memory_total_bytes"`
 	SwapUsedBytes    int64         `json:"swap_used_bytes"`

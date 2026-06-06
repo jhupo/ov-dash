@@ -60,11 +60,13 @@ func (c *Collector) Collect(ctx context.Context, id string) error {
 }
 
 func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error) {
+	start := time.Now()
 	client, err := c.connect(ctx, item)
 	if err != nil {
 		return Metric{}, err
 	}
 	defer client.Close()
+	latencyMS := float64(time.Since(start).Microseconds()) / 1000
 
 	if err := runSSH(ctx, client, installCommand()); err != nil {
 		return Metric{}, err
@@ -80,7 +82,9 @@ func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error
 		return Metric{}, err
 	}
 
-	return payload.metric(item.ID, time.Now().UTC()), nil
+	metric := payload.metric(item.ID, time.Now().UTC())
+	metric.LatencyMS = latencyMS
+	return metric, nil
 }
 
 func (c *Collector) connect(ctx context.Context, item Connection) (*ssh.Client, error) {
@@ -189,6 +193,7 @@ func trimError(err error) string {
 
 type agentPayload struct {
 	CPUPercent      float64 `json:"cpu_percent"`
+	CPUCores        int64   `json:"cpu_cores"`
 	MemoryUsedBytes int64   `json:"memory_used_bytes"`
 	MemoryTotalBytes int64  `json:"memory_total_bytes"`
 	SwapUsedBytes    int64  `json:"swap_used_bytes"`
@@ -221,6 +226,7 @@ func (p agentPayload) metric(serverID string, collectedAt time.Time) Metric {
 	return Metric{
 		ServerID:         serverID,
 		CPUPercent:      p.CPUPercent,
+		CPUCores:        p.CPUCores,
 		MemoryUsedBytes: p.MemoryUsedBytes,
 		MemoryTotalBytes: p.MemoryTotalBytes,
 		SwapUsedBytes:    p.SwapUsedBytes,

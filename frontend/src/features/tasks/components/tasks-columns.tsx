@@ -36,9 +36,14 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='任务' />
     ),
-    cell: ({ row }) => (
-      <div className='w-32 truncate font-mono text-xs'>{row.getValue('id')}</div>
-    ),
+    cell: ({ row }) => {
+      const id = String(row.getValue('id'))
+      return (
+        <div className='w-24 truncate font-mono text-xs' title={id}>
+          {id.replace(/^srvcol_/, '')}
+        </div>
+      )
+    },
     enableSorting: false,
     enableHiding: false,
   },
@@ -48,7 +53,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
       <DataTableColumnHeader column={column} title='标题' />
     ),
     meta: {
-      className: 'ps-1 min-w-[24rem]',
+      className: 'ps-1 min-w-[28rem]',
       tdClassName: 'ps-4',
     },
     cell: ({ row }) => {
@@ -57,8 +62,14 @@ export const tasksColumns: ColumnDef<Task>[] = [
       return (
         <div className='flex min-w-0 flex-col gap-1'>
           <div className='flex min-w-0 items-center gap-2'>
-            {label && <Badge variant='outline'>{label.label}</Badge>}
-            <span className='truncate font-medium'>{row.getValue('title')}</span>
+            {label && (
+              <Badge variant='outline' className='shrink-0'>
+                {label.label}
+              </Badge>
+            )}
+            <span className='min-w-0 truncate font-medium'>
+              {row.getValue('title')}
+            </span>
           </div>
           {row.original.description && (
             <span className='truncate text-xs text-muted-foreground'>

@@ -49,6 +49,7 @@ type MetricRow = {
 type ChartPoint = {
   time: string
   cpu: number
+  latency: number
   memory: number
   disk: number
   network_rx: number
@@ -268,7 +269,7 @@ function ServerCard({
           </div>
           {metric ? (
             <div className='mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground'>
-              <IconValue icon={<Cpu />} value='CPU' />
+              <IconValue icon={<Cpu />} value={cpuCoreText(metric)} />
               <IconValue icon={<MemoryStick />} value={memoryText(metric)} />
               <IconValue icon={<HardDrive />} value={diskText(metric)} />
             </div>
@@ -426,6 +427,7 @@ function ServerStatsDialog({
   onOpenChange: () => void
 }) {
   const [range, setRange] = useState('1h')
+  const [view, setView] = useState<'load' | 'latency'>('load')
   const metrics = useQuery({
     queryKey: ['server-metrics', server?.id, range],
     queryFn: () => listServerMetrics(server!.id, range),
@@ -460,13 +462,17 @@ function ServerStatsDialog({
           </DialogClose>
           <div className='flex items-center justify-center'>
             <div className='inline-flex rounded-md border bg-muted/60 p-1'>
-              {['负载', '延迟'].map((label) => (
+              {[
+                ['负载', 'load'],
+                ['延迟', 'latency'],
+              ].map(([label, value]) => (
                 <Button
-                  key={label}
+                  key={value}
                   type='button'
                   size='sm'
-                  variant={label === '负载' ? 'secondary' : 'ghost'}
+                  variant={view === value ? 'secondary' : 'ghost'}
                   className='h-8 px-5'
+                  onClick={() => setView(value as 'load' | 'latency')}
                 >
                   {label}
                 </Button>
@@ -497,7 +503,7 @@ function ServerStatsDialog({
             </div>
           </div>
 
-          {points.length ? (
+          {points.length && view === 'load' ? (
             <div className='grid gap-4 lg:grid-cols-3'>
               <StatsChart
                 title='CPU'
@@ -563,6 +569,46 @@ function ServerStatsDialog({
                 ]}
               />
             </div>
+          ) : points.length ? (
+            <div className='grid gap-4 lg:grid-cols-3'>
+              <StatsChart
+                title='延迟'
+                value={
+                  latest?.latency_ms
+                    ? `${latest.latency_ms.toFixed(0)} ms`
+                    : '待采集'
+                }
+                data={points}
+                lines={[{ key: 'latency', name: '延迟', color: '#38bdf8' }]}
+                unit='ms'
+              />
+              <StatsChart
+                title='网络'
+                value={
+                  latest
+                    ? `↑ ${formatRate(latest.network_tx_rate_bps)}  ↓ ${formatRate(latest.network_rx_rate_bps)}`
+                    : '待采集'
+                }
+                data={points}
+                lines={[
+                  { key: 'network_tx', name: '上传', color: '#fb7185' },
+                  { key: 'network_rx', name: '下载', color: '#38bdf8' },
+                ]}
+              />
+              <StatsChart
+                title='连接数'
+                value={
+                  latest
+                    ? `TCP: ${latest.tcp_connections}  UDP: ${latest.udp_connections}`
+                    : '待采集'
+                }
+                data={points}
+                lines={[
+                  { key: 'tcp', name: 'TCP', color: '#f87171' },
+                  { key: 'udp', name: 'UDP', color: '#facc15' },
+                ]}
+              />
+            </div>
           ) : (
             <div className='flex min-h-[470px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground'>
               {metrics.isFetching ? '正在读取负载统计...' : '暂无采集历史'}
@@ -607,7 +653,7 @@ function StatsChart({
           <YAxis hide domain={unit === '%' ? [0, 100] : ['auto', 'auto']} />
           <Tooltip
             formatter={(value, name) => [
-              `${Number(value).toFixed(unit === '%' ? 1 : 0)}${unit}`,
+              `${Number(value).toFixed(unit === '%' ? 1 : 0)}${unit ? ` ${unit}` : ''}`,
               name,
             ]}
             contentStyle={{
@@ -701,6 +747,9 @@ function InfoLine({ label, value }: { label: string; value: string }) {
 
 function RegionMark({ region }: { region: string }) {
   const normalized = region.trim().toLowerCase()
+  if (!normalized || normalized === 'utc' || normalized === 'etc/utc') {
+    return null
+  }
   const flag = normalized.includes('hk')
     ? '🇭🇰'
     : normalized.includes('us') || normalized.includes('usa')
@@ -802,6 +851,11 @@ function memoryText(metric: ServerMetric | null) {
   return formatBytes(metric.memory_total_bytes)
 }
 
+function cpuCoreText(metric: ServerMetric | null) {
+  if (!metric?.cpu_cores) return 'CPU'
+  return `${metric.cpu_cores} Cores`
+}
+
 function diskText(metric: ServerMetric | null) {
   if (!metric) return '待采集'
   return formatBytes(metric.disk_total_bytes)
@@ -815,6 +869,7 @@ function toChartPoint(metric: ServerMetric): ChartPoint {
       hour12: false,
     }),
     cpu: metric.cpu_percent,
+    latency: metric.latency_ms,
     memory: percent(metric.memory_used_bytes, metric.memory_total_bytes),
     disk: percent(metric.disk_used_bytes, metric.disk_total_bytes),
     network_rx: metric.network_rx_rate_bps,

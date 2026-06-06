@@ -6,7 +6,9 @@ ALTER TABLE server_metrics
     ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS tcp_connections BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS udp_connections BIGINT NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS process_count BIGINT NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS process_count BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS cpu_cores INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_server_connections_next_collect_at
     ON server_connections (next_collect_at, collect_status);
@@ -31,6 +33,8 @@ CREATE TABLE IF NOT EXISTS server_metric_samples (
     tcp_connections BIGINT NOT NULL DEFAULT 0,
     udp_connections BIGINT NOT NULL DEFAULT 0,
     process_count BIGINT NOT NULL DEFAULT 0,
+    cpu_cores INTEGER NOT NULL DEFAULT 0,
+    latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
     uptime_seconds BIGINT NOT NULL DEFAULT 0,
     architecture TEXT NOT NULL DEFAULT '',
     virtualization TEXT NOT NULL DEFAULT '',

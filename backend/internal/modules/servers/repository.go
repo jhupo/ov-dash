@@ -25,7 +25,7 @@ func (r *Repository) List(ctx context.Context) ([]Connection, error) {
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
 			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed,
 			c.collect_status, c.collect_error, c.last_collected_at, c.created_at, c.updated_at,
-			m.server_id, m.cpu_percent, m.memory_used_bytes, m.memory_total_bytes,
+			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
 			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
 			m.load1, m.load5, m.load15, m.tcp_connections, m.udp_connections, m.process_count, m.uptime_seconds, m.architecture, m.virtualization,
@@ -56,7 +56,7 @@ func (r *Repository) Get(ctx context.Context, id string) (Connection, error) {
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
 			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed,
 			c.collect_status, c.collect_error, c.last_collected_at, c.created_at, c.updated_at,
-			m.server_id, m.cpu_percent, m.memory_used_bytes, m.memory_total_bytes,
+			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
 			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
 			m.load1, m.load5, m.load15, m.tcp_connections, m.udp_connections, m.process_count, m.uptime_seconds, m.architecture, m.virtualization,
@@ -150,7 +150,7 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at,
 			c.collector_installed, c.collect_status, c.collect_error, c.last_collected_at,
 			c.created_at, c.updated_at,
-			m.server_id, m.cpu_percent, m.memory_used_bytes, m.memory_total_bytes,
+			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
 			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
 			m.load1, m.load5, m.load15, m.tcp_connections, m.udp_connections, m.process_count, m.uptime_seconds, m.architecture, m.virtualization,
@@ -206,7 +206,7 @@ func (r *Repository) MarkCollectQueued(ctx context.Context, id string) error {
 func (r *Repository) Samples(ctx context.Context, id string, since time.Time) ([]Metric, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT
-			server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+			server_id, cpu_percent, cpu_cores, latency_ms, memory_used_bytes, memory_total_bytes,
 			swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes,
 			network_rx_bytes, network_tx_bytes, network_rx_rate_bps, network_tx_rate_bps,
 			load1, load5, load15, tcp_connections, udp_connections, process_count, uptime_seconds, architecture, virtualization,
@@ -242,6 +242,8 @@ func scanMetricSample(row metricScanner) (Metric, error) {
 	if err := row.Scan(
 		&item.ServerID,
 		&item.CPUPercent,
+		&item.CPUCores,
+		&item.LatencyMS,
 		&item.MemoryUsedBytes,
 		&item.MemoryTotalBytes,
 		&item.SwapUsedBytes,
@@ -310,7 +312,7 @@ func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
 
 	_, err = r.db.Exec(ctx, `
 		INSERT INTO server_metrics (
-			server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+			server_id, cpu_percent, cpu_cores, latency_ms, memory_used_bytes, memory_total_bytes,
 			swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes,
 			network_rx_bytes, network_tx_bytes, network_rx_rate_bps, network_tx_rate_bps,
 			load1, load5, load15, tcp_connections, udp_connections, process_count, uptime_seconds, architecture, virtualization,
@@ -318,10 +320,12 @@ func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-			$13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+			$13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
 		)
 		ON CONFLICT (server_id) DO UPDATE SET
 			cpu_percent = EXCLUDED.cpu_percent,
+			cpu_cores = EXCLUDED.cpu_cores,
+			latency_ms = EXCLUDED.latency_ms,
 			memory_used_bytes = EXCLUDED.memory_used_bytes,
 			memory_total_bytes = EXCLUDED.memory_total_bytes,
 			swap_used_bytes = EXCLUDED.swap_used_bytes,
@@ -347,7 +351,7 @@ func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
 			region = EXCLUDED.region,
 			raw = EXCLUDED.raw,
 			collected_at = EXCLUDED.collected_at
-	`, metric.ServerID, metric.CPUPercent, metric.MemoryUsedBytes, metric.MemoryTotalBytes,
+	`, metric.ServerID, metric.CPUPercent, metric.CPUCores, metric.LatencyMS, metric.MemoryUsedBytes, metric.MemoryTotalBytes,
 		metric.SwapUsedBytes, metric.SwapTotalBytes, metric.DiskUsedBytes, metric.DiskTotalBytes,
 		metric.NetworkRXBytes, metric.NetworkTXBytes, metric.NetworkRXRateBps, metric.NetworkTXRateBps,
 		metric.Load1, metric.Load5, metric.Load15, metric.TCPConnections, metric.UDPConnections, metric.ProcessCount, metric.UptimeSeconds, metric.Architecture,
@@ -358,7 +362,7 @@ func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
 
 	_, err = r.db.Exec(ctx, `
 		INSERT INTO server_metric_samples (
-			server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+			server_id, cpu_percent, cpu_cores, latency_ms, memory_used_bytes, memory_total_bytes,
 			swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes,
 			network_rx_bytes, network_tx_bytes, network_rx_rate_bps, network_tx_rate_bps,
 			load1, load5, load15, tcp_connections, udp_connections, process_count, uptime_seconds, architecture, virtualization,
@@ -366,9 +370,9 @@ func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-			$13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+			$13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
 		)
-	`, metric.ServerID, metric.CPUPercent, metric.MemoryUsedBytes, metric.MemoryTotalBytes,
+	`, metric.ServerID, metric.CPUPercent, metric.CPUCores, metric.LatencyMS, metric.MemoryUsedBytes, metric.MemoryTotalBytes,
 		metric.SwapUsedBytes, metric.SwapTotalBytes, metric.DiskUsedBytes, metric.DiskTotalBytes,
 		metric.NetworkRXBytes, metric.NetworkTXBytes, metric.NetworkRXRateBps, metric.NetworkTXRateBps,
 		metric.Load1, metric.Load5, metric.Load15, metric.TCPConnections, metric.UDPConnections, metric.ProcessCount, metric.UptimeSeconds, metric.Architecture,
@@ -398,6 +402,8 @@ func scanConnection(row connectionScanner) (Connection, error) {
 	var item Connection
 	var metricID sql.NullString
 	var cpuPercent sql.NullFloat64
+	var cpuCores sql.NullInt64
+	var latencyMS sql.NullFloat64
 	var memoryUsedBytes sql.NullInt64
 	var memoryTotalBytes sql.NullInt64
 	var swapUsedBytes sql.NullInt64
@@ -445,6 +451,8 @@ func scanConnection(row connectionScanner) (Connection, error) {
 		&item.UpdatedAt,
 		&metricID,
 		&cpuPercent,
+		&cpuCores,
+		&latencyMS,
 		&memoryUsedBytes,
 		&memoryTotalBytes,
 		&swapUsedBytes,
@@ -478,6 +486,8 @@ func scanConnection(row connectionScanner) (Connection, error) {
 		metric := Metric{
 			ServerID:         metricID.String,
 			CPUPercent:      nullFloat(cpuPercent),
+			CPUCores:        nullInt(cpuCores),
+			LatencyMS:       nullFloat(latencyMS),
 			MemoryUsedBytes: nullInt(memoryUsedBytes),
 			MemoryTotalBytes: nullInt(memoryTotalBytes),
 			SwapUsedBytes:    nullInt(swapUsedBytes),
@@ -542,4 +552,5 @@ func nullTime(value sql.NullTime) time.Time {
 func IsNotFound(err error) bool {
 	return err == pgx.ErrNoRows
 }
+
 

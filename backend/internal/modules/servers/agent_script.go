@@ -30,6 +30,7 @@ BEGIN {
   dt=total2-total1; di=idle2-idle1;
   if (dt <= 0) print 0; else printf "%.2f", (dt-di)*100/dt;
 }')
+cpu_cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || awk -F': ' '/^processor/ {count++} END {print count+0}' /proc/cpuinfo 2>/dev/null || echo 0)
 
 rx1=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") rx+=$2} END {print rx+0}' /proc/net/dev)
 tx1=$(awk 'NR>2 {gsub(":", "", $1); if ($1!="lo") tx+=$10} END {print tx+0}' /proc/net/dev)
@@ -56,6 +57,7 @@ region=$(readlink /etc/localtime 2>/dev/null | awk -F'zoneinfo/' '{print $2}' | 
 
 printf '{'
 printf '"cpu_percent":%s,' "$(num "$cpu_percent")"
+printf '"cpu_cores":%s,' "$(num "$cpu_cores")"
 printf '"memory_used_bytes":%s,' "$(num "$mem_used")"
 printf '"memory_total_bytes":%s,' "$(num "$mem_total")"
 printf '"swap_used_bytes":%s,' "$(num "$swap_used")"
