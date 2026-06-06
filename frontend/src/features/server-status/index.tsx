@@ -7,9 +7,7 @@ import {
   HardDrive,
   Info,
   MemoryStick,
-  Network,
   RefreshCw,
-  Server,
 } from 'lucide-react'
 import {
   listServerConnections,
@@ -221,8 +219,8 @@ function ServerCard({
   const rows = buildRows(metric)
 
   return (
-    <article className='min-h-[350px] w-full max-w-[294px] rounded-lg border border-sky-950/10 bg-sky-100/80 p-4 text-slate-950 shadow-md backdrop-blur dark:border-sky-200/20 dark:bg-sky-200/80 dark:text-slate-950'>
-      <div className='flex items-start justify-between gap-3 border-b border-slate-500/20 pb-3'>
+    <article className='min-h-[350px] w-full max-w-[294px] rounded-lg border bg-card/80 p-4 text-card-foreground shadow-md backdrop-blur'>
+      <div className='flex items-start justify-between gap-3 border-b pb-3'>
         <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 items-center gap-2'>
             <RegionMark region={server.region} />
@@ -236,13 +234,13 @@ function ServerCard({
             </button>
           </div>
           {metric ? (
-            <div className='mt-3 grid grid-cols-3 gap-2 text-xs text-slate-800'>
+            <div className='mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground'>
               <IconValue icon={<Cpu />} value='CPU' />
               <IconValue icon={<MemoryStick />} value={memoryText(metric)} />
               <IconValue icon={<HardDrive />} value={diskText(metric)} />
             </div>
           ) : (
-            <div className='mt-3 text-center text-xs text-slate-600'>
+            <div className='mt-3 text-center text-xs text-muted-foreground'>
               待采集
             </div>
           )}
@@ -251,7 +249,7 @@ function ServerCard({
           type='button'
           size='icon'
           variant='ghost'
-          className='size-8 shrink-0 text-slate-950 hover:bg-sky-200/70 hover:text-slate-950'
+          className='size-8 shrink-0'
           onClick={onDetail}
           aria-label='查看服务器详情'
         >
@@ -265,7 +263,7 @@ function ServerCard({
         ))}
       </div>
 
-      <div className='mt-4 border-t border-slate-500/20 pt-3 text-xs'>
+      <div className='mt-4 border-t pt-3 text-xs'>
         <InfoLine
           label='网络'
           value={
@@ -295,9 +293,9 @@ function ServerCard({
         />
       </div>
 
-      <div className='mt-4 flex items-center justify-between gap-3 text-xs text-slate-800'>
+      <div className='mt-4 flex items-center justify-between gap-3 text-xs text-muted-foreground'>
         <span className='truncate'>到期: {formatDate(server.expires_at)}</span>
-        <span className='h-4 w-px bg-slate-400/60' />
+        <span className='h-4 w-px bg-border' />
         <span className='truncate'>{cardStatusText(server)}</span>
       </div>
     </article>
@@ -413,7 +411,7 @@ function IconValue({
 }) {
   return (
     <span className='flex min-w-0 items-center gap-1'>
-      <span className='[&_svg]:size-3.5 [&_svg]:text-blue-600'>{icon}</span>
+      <span className='[&_svg]:size-3.5 [&_svg]:text-primary'>{icon}</span>
       <span className='truncate'>{value}</span>
     </span>
   )
@@ -432,7 +430,7 @@ function ProgressRow({ row }: { row: MetricRow }) {
   return (
     <div className='grid grid-cols-[3rem_minmax(0,1fr)_3rem] items-center gap-3 text-sm'>
       <span>{row.label}</span>
-      <div className='h-3 overflow-hidden rounded-full bg-sky-200/90'>
+      <div className='h-3 overflow-hidden rounded-full bg-muted'>
         <div
           className={`h-full rounded-full ${toneClass}`}
           style={{ width: `${Math.max(0, Math.min(100, row.percent))}%` }}
@@ -447,7 +445,7 @@ function InfoLine({ label, value }: { label: string; value: string }) {
   return (
     <div className='grid grid-cols-[3rem_minmax(0,1fr)] gap-3'>
       <span>{label}</span>
-      <span className='truncate text-right text-slate-950'>{value}</span>
+      <span className='truncate text-right text-foreground'>{value}</span>
     </div>
   )
 }
@@ -460,13 +458,20 @@ function RegionMark({ region }: { region: string }) {
       ? '🇺🇸'
       : normalized.includes('jp')
         ? '🇯🇵'
-        : ''
+        : normalized.includes('sg') || normalized.includes('singapore')
+          ? '🇸🇬'
+          : normalized.includes('kr') || normalized.includes('korea')
+            ? '🇰🇷'
+            : normalized.includes('de') || normalized.includes('germany')
+              ? '🇩🇪'
+              : normalized.includes('gb') ||
+                  normalized.includes('uk') ||
+                  normalized.includes('london')
+                ? '🇬🇧'
+                : ''
   if (flag) return <span className='text-lg leading-none'>{flag}</span>
-  return (
-    <span className='flex size-5 items-center justify-center rounded-sm bg-sky-200 text-blue-700'>
-      <Network className='size-3.5' />
-    </span>
-  )
+  if (!region.trim()) return null
+  return <span className='text-xs font-semibold text-primary'>{region}</span>
 }
 
 function SystemMark({ metric }: { metric: ServerMetric | null }) {
@@ -482,11 +487,7 @@ function SystemMark({ metric }: { metric: ServerMetric | null }) {
           : ''
 
   if (!label) {
-    return (
-      <span className='flex size-5 items-center justify-center rounded-sm bg-muted text-muted-foreground'>
-        <Server className='size-3.5' />
-      </span>
-    )
+    return null
   }
 
   return (
