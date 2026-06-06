@@ -10,6 +10,7 @@ import (
 	"ov-dash/backend/internal/modules/apps"
 	"ov-dash/backend/internal/modules/chats"
 	"ov-dash/backend/internal/modules/dashboard"
+	"ov-dash/backend/internal/modules/proxy"
 	"ov-dash/backend/internal/modules/tasks"
 	"ov-dash/backend/internal/modules/users"
 	"ov-dash/backend/internal/queue"
@@ -42,6 +43,8 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Get("/readyz", health.Readiness)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		proxySettings := NewProxySettingsHandler(proxy.NewService(proxy.NewRepository(deps.DB)))
+
 		r.Get("/health", health.Readiness)
 		r.Post("/jobs", NewJobsHandler(deps.Queue, deps.Config.Worker).Create)
 		r.Get("/dashboard", NewDashboardHandler(dashboard.NewService()).Snapshot)
@@ -49,6 +52,8 @@ func NewRouter(deps RouterDeps) http.Handler {
 		r.Get("/users", NewUsersHandler(users.NewService(users.NewRepository(deps.DB))).List)
 		r.Get("/apps", NewAppsHandler(apps.NewService(apps.NewRepository(deps.DB))).List)
 		r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(deps.DB))).ListConversations)
+		r.Get("/proxy-settings", proxySettings.Get)
+		r.Put("/proxy-settings", proxySettings.Update)
 	})
 
 	return r
