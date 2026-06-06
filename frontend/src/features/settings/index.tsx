@@ -1,5 +1,5 @@
 import { Outlet, useLocation } from '@tanstack/react-router'
-import { Bell, Monitor, Palette, Route, Wrench } from 'lucide-react'
+import { Bell, CircleHelp, Monitor, Palette, Route, Wrench } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
@@ -37,6 +37,11 @@ const profileNavItems = [
     title: '显示',
     href: '/settings/display',
     icon: <Monitor size={18} />,
+  },
+  {
+    title: '帮助中心',
+    href: '/settings/help-center',
+    icon: <CircleHelp size={18} />,
   },
 ]
 

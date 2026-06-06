@@ -35,6 +35,7 @@ import { Route as ClerkAuthenticatedUserManagementRouteImport } from './routes/c
 import { Route as ClerkauthSignUpRouteImport } from './routes/clerk/(auth)/sign-up'
 import { Route as ClerkauthSignInRouteImport } from './routes/clerk/(auth)/sign-in'
 import { Route as AuthenticatedSettingsNotificationsRouteImport } from './routes/_authenticated/settings/notifications'
+import { Route as AuthenticatedSettingsHelpCenterRouteImport } from './routes/_authenticated/settings/help-center'
 import { Route as AuthenticatedSettingsProxyRouteImport } from './routes/_authenticated/settings/proxy'
 import { Route as AuthenticatedSettingsDisplayRouteImport } from './routes/_authenticated/settings/display'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
@@ -179,6 +180,12 @@ const AuthenticatedSettingsProxyRoute =
     path: '/proxy',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedSettingsHelpCenterRoute =
+  AuthenticatedSettingsHelpCenterRouteImport.update({
+    id: '/help-center',
+    path: '/help-center',
+    getParentRoute: () => AuthenticatedSettingsRouteRoute,
+  } as any)
 const AuthenticatedSettingsDisplayRoute =
   AuthenticatedSettingsDisplayRouteImport.update({
     id: '/display',
@@ -222,6 +229,7 @@ export interface FileRoutesByFullPath {
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
+  '/settings/help-center': typeof AuthenticatedSettingsHelpCenterRoute
   '/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
   '/settings/proxy': typeof AuthenticatedSettingsProxyRoute
   '/clerk/sign-in': typeof ClerkauthSignInRoute
@@ -251,6 +259,7 @@ export interface FileRoutesByTo {
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
+  '/settings/help-center': typeof AuthenticatedSettingsHelpCenterRoute
   '/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
   '/settings/proxy': typeof AuthenticatedSettingsProxyRoute
   '/clerk/sign-in': typeof ClerkauthSignInRoute
@@ -285,6 +294,7 @@ export interface FileRoutesById {
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/settings/display': typeof AuthenticatedSettingsDisplayRoute
+  '/_authenticated/settings/help-center': typeof AuthenticatedSettingsHelpCenterRoute
   '/_authenticated/settings/notifications': typeof AuthenticatedSettingsNotificationsRoute
   '/_authenticated/settings/proxy': typeof AuthenticatedSettingsProxyRoute
   '/clerk/(auth)/sign-in': typeof ClerkauthSignInRoute
@@ -317,6 +327,7 @@ export interface FileRouteTypes {
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/display'
+    | '/settings/help-center'
     | '/settings/notifications'
     | '/settings/proxy'
     | '/clerk/sign-in'
@@ -346,6 +357,7 @@ export interface FileRouteTypes {
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/display'
+    | '/settings/help-center'
     | '/settings/notifications'
     | '/settings/proxy'
     | '/clerk/sign-in'
@@ -379,6 +391,7 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/account'
     | '/_authenticated/settings/appearance'
     | '/_authenticated/settings/display'
+    | '/_authenticated/settings/help-center'
     | '/_authenticated/settings/notifications'
     | '/_authenticated/settings/proxy'
     | '/clerk/(auth)/sign-in'
@@ -598,6 +611,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsProxyRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/settings/help-center': {
+      id: '/_authenticated/settings/help-center'
+      path: '/help-center'
+      fullPath: '/settings/help-center'
+      preLoaderRoute: typeof AuthenticatedSettingsHelpCenterRouteImport
+      parentRoute: typeof AuthenticatedSettingsRouteRoute
+    }
     '/_authenticated/settings/display': {
       id: '/_authenticated/settings/display'
       path: '/display'
@@ -634,6 +654,7 @@ interface AuthenticatedSettingsRouteRouteChildren {
   AuthenticatedSettingsAppearanceRoute: typeof AuthenticatedSettingsAppearanceRoute
   AuthenticatedSettingsDisplayRoute: typeof AuthenticatedSettingsDisplayRoute
   AuthenticatedSettingsNotificationsRoute: typeof AuthenticatedSettingsNotificationsRoute
+  AuthenticatedSettingsHelpCenterRoute: typeof AuthenticatedSettingsHelpCenterRoute
   AuthenticatedSettingsProxyRoute: typeof AuthenticatedSettingsProxyRoute
   AuthenticatedSettingsIndexRoute: typeof AuthenticatedSettingsIndexRoute
 }
@@ -645,6 +666,7 @@ const AuthenticatedSettingsRouteRouteChildren: AuthenticatedSettingsRouteRouteCh
     AuthenticatedSettingsDisplayRoute: AuthenticatedSettingsDisplayRoute,
     AuthenticatedSettingsNotificationsRoute:
       AuthenticatedSettingsNotificationsRoute,
+    AuthenticatedSettingsHelpCenterRoute: AuthenticatedSettingsHelpCenterRoute,
     AuthenticatedSettingsProxyRoute: AuthenticatedSettingsProxyRoute,
     AuthenticatedSettingsIndexRoute: AuthenticatedSettingsIndexRoute,
   }
