@@ -1,10 +1,8 @@
 import {
   LayoutDashboard,
-  Monitor,
   ListTodo,
   HelpCircle,
   Package,
-  Palette,
   Route,
   Server,
   Settings,
@@ -62,19 +60,9 @@ export const sidebarData: SidebarData = {
           icon: Settings,
           items: [
             {
-              title: '外观',
-              url: '/settings/appearance',
-              icon: Palette,
-            },
-            {
               title: '代理',
               url: '/settings/proxy',
               icon: Route,
-            },
-            {
-              title: '显示',
-              url: '/settings/display',
-              icon: Monitor,
             },
           ],
         },
