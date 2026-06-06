@@ -380,10 +380,22 @@ function ServerTerminalDialog({
       setStatus('open')
     }
     socket.onmessage = (event) => {
-      setOutput((current) => current + String(event.data))
+      const message = String(event.data)
+      setOutput((current) => current + message)
+      if (
+        message.includes('连接失败') ||
+        message.includes('打开输入失败') ||
+        message.includes('打开输出失败') ||
+        message.includes('打开错误输出失败') ||
+        message.includes('启动 Shell 失败')
+      ) {
+        toast.error(message.trim())
+      }
     }
     socket.onerror = () => {
-      setOutput((current) => current + '\r\n连接异常。\r\n')
+      const message = 'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
+      setOutput((current) => current + `\r\n${message}\r\n`)
+      toast.error(message)
     }
     socket.onclose = () => {
       setStatus('closed')
