@@ -39,7 +39,7 @@ export function ProfileDropdown() {
           <DropdownMenuSeparator />
           <DropdownMenuItem asChild>
             <Link to='/settings/account'>
-              设置
+              个人设置
               <DropdownMenuShortcut>⇧⌘S</DropdownMenuShortcut>
             </Link>
           </DropdownMenuItem>

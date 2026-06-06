@@ -3,12 +3,11 @@ import {
   Monitor,
   ListTodo,
   HelpCircle,
-  Bell,
   Package,
   Palette,
+  Route,
   Server,
   Settings,
-  Wrench,
   Users,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
@@ -63,19 +62,14 @@ export const sidebarData: SidebarData = {
           icon: Settings,
           items: [
             {
-              title: '账号',
-              url: '/settings/account',
-              icon: Wrench,
-            },
-            {
               title: '外观',
               url: '/settings/appearance',
               icon: Palette,
             },
             {
-              title: '通知',
-              url: '/settings/notifications',
-              icon: Bell,
+              title: '代理',
+              url: '/settings/proxy',
+              icon: Route,
             },
             {
               title: '显示',
