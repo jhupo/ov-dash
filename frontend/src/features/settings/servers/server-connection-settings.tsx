@@ -4,7 +4,6 @@ import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
-  CalendarDays,
   CheckCircle2,
   Edit3,
   FileKey2,
@@ -15,7 +14,6 @@ import {
   Server,
   Trash2,
   Upload,
-  XCircle,
 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { toast } from 'sonner'
@@ -296,12 +294,7 @@ function CollectBadge({ item }: { item: ServerConnection }) {
     )
   }
   if (item.collect_status === 'error') {
-    return (
-      <Badge variant='destructive' className='gap-1'>
-        <XCircle className='size-3' />
-        采集失败
-      </Badge>
-    )
+    return <Badge variant='secondary'>待采集</Badge>
   }
   return <Badge variant='secondary'>等待采集</Badge>
 }
@@ -412,8 +405,7 @@ function ServerConnectionDialog({
                   control={form.control}
                   name='expires_at'
                   label='到期时间'
-                  type='date'
-                  icon={<CalendarDays />}
+                  placeholder='2026-06-30'
                 />
               </div>
             </section>
@@ -484,7 +476,9 @@ function ServerConnectionDialog({
                             <div className='flex min-w-0 items-center gap-2 text-sm text-muted-foreground'>
                               <FileKey2 className='size-4 shrink-0' />
                               <span className='truncate'>
-                                {keyFileName || '未选择'}
+                                {keyFileName && keyFileName !== '已保存私钥'
+                                  ? keyFileName
+                                  : '未选择新文件'}
                               </span>
                             </div>
                           </div>
@@ -500,7 +494,7 @@ function ServerConnectionDialog({
                   control={form.control}
                   name='clear_secret'
                   render={({ field }) => (
-                    <FormItem className='flex flex-row items-center gap-2'>
+                    <FormItem className='flex flex-row items-center gap-2 pt-1'>
                       <FormControl>
                         <Checkbox
                           checked={field.value}
@@ -509,7 +503,9 @@ function ServerConnectionDialog({
                           }
                         />
                       </FormControl>
-                      <FormLabel>清除已保存凭据</FormLabel>
+                      <FormLabel className='text-muted-foreground'>
+                        清除已保存凭据
+                      </FormLabel>
                     </FormItem>
                   )}
                 />

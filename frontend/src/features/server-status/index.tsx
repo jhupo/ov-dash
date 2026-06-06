@@ -9,6 +9,7 @@ import {
   MemoryStick,
   Network,
   RefreshCw,
+  Server,
 } from 'lucide-react'
 import {
   listServerConnections,
@@ -197,11 +198,13 @@ function SummaryItem({
   subValue?: string
 }) {
   return (
-    <div className='min-w-0 text-center'>
-      <div className='text-sm text-muted-foreground'>{label}</div>
-      <div className='truncate text-sm font-semibold'>{value}</div>
+    <div className='min-w-0 text-center text-foreground'>
+      <div className='text-xs text-muted-foreground'>{label}</div>
+      <div className='truncate text-sm font-semibold tabular-nums'>{value}</div>
       {subValue && (
-        <div className='truncate text-sm font-semibold'>{subValue}</div>
+        <div className='truncate text-sm font-semibold tabular-nums'>
+          {subValue}
+        </div>
       )}
     </div>
   )
@@ -216,23 +219,33 @@ function ServerCard({
 }) {
   const metric = server.metric
   const rows = buildRows(metric)
-  const group = server.group_name || '默认'
 
   return (
     <article className='min-h-[350px] rounded-md border bg-card/80 p-4 shadow-sm'>
       <div className='flex items-start justify-between gap-3 border-b pb-3'>
-        <div className='min-w-0'>
+        <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 items-center gap-2'>
             <RegionMark region={server.region} />
-            <span className='truncate font-semibold'>
-              [{group}] {server.name}
-            </span>
+            <SystemMark metric={metric} />
+            <button
+              type='button'
+              className='min-w-0 truncate text-left font-semibold underline-offset-4 hover:underline'
+              onClick={onDetail}
+            >
+              {server.name}
+            </button>
           </div>
-          <div className='mt-2 grid grid-cols-3 gap-2 text-xs text-muted-foreground'>
-            <IconValue icon={<Cpu />} value={metric ? 'CPU' : '待采集'} />
-            <IconValue icon={<MemoryStick />} value={memoryText(metric)} />
-            <IconValue icon={<HardDrive />} value={diskText(metric)} />
-          </div>
+          {metric ? (
+            <div className='mt-2 grid grid-cols-3 gap-2 text-xs text-muted-foreground'>
+              <IconValue icon={<Cpu />} value='CPU' />
+              <IconValue icon={<MemoryStick />} value={memoryText(metric)} />
+              <IconValue icon={<HardDrive />} value={diskText(metric)} />
+            </div>
+          ) : (
+            <div className='mt-2 text-center text-xs text-muted-foreground'>
+              待采集
+            </div>
+          )}
         </div>
         <Button
           type='button'
@@ -282,7 +295,7 @@ function ServerCard({
       <div className='mt-4 flex items-center justify-between gap-3 border-t pt-3 text-xs text-muted-foreground'>
         <span className='truncate'>到期: {formatDate(server.expires_at)}</span>
         <span className='h-4 w-px bg-border' />
-        <span className='truncate'>{statusText(server)}</span>
+        <span className='truncate'>{cardStatusText(server)}</span>
       </div>
     </article>
   )
@@ -350,7 +363,11 @@ function ServerDetailDialog({
             />
             <DetailItem
               label='最后上报'
-              value={server.last_collected_at ? formatDateTime(server.last_collected_at) : '待采集'}
+              value={
+                server.last_collected_at
+                  ? formatDateTime(server.last_collected_at)
+                  : '待采集'
+              }
             />
             <DetailItem label='到期时间' value={formatDate(server.expires_at)} />
             <DetailItem label='连接' value={server.connection_hint} />
@@ -445,6 +462,33 @@ function RegionMark({ region }: { region: string }) {
   return (
     <span className='flex size-5 items-center justify-center rounded-sm bg-primary/10 text-primary'>
       <Network className='size-3.5' />
+    </span>
+  )
+}
+
+function SystemMark({ metric }: { metric: ServerMetric | null }) {
+  const os = metric?.os_name.toLowerCase() ?? ''
+  const label = os.includes('ubuntu')
+    ? 'Ubuntu'
+    : os.includes('debian')
+      ? 'Debian'
+      : os.includes('centos') || os.includes('rocky') || os.includes('alma')
+        ? 'EL'
+        : os.includes('alpine')
+          ? 'Alpine'
+          : ''
+
+  if (!label) {
+    return (
+      <span className='flex size-5 items-center justify-center rounded-sm bg-muted text-muted-foreground'>
+        <Server className='size-3.5' />
+      </span>
+    )
+  }
+
+  return (
+    <span className='flex h-5 min-w-5 items-center justify-center rounded-sm bg-orange-500 px-1 text-[10px] font-bold text-white'>
+      {label.slice(0, 2)}
     </span>
   )
 }
@@ -547,4 +591,10 @@ function statusText(server: ServerConnection) {
   if (server.collect_status === 'collecting') return '采集中'
   if (server.collect_status === 'error') return '异常'
   return '等待采集'
+}
+
+function cardStatusText(server: ServerConnection) {
+  if (server.collect_status === 'ok') return '在线'
+  if (server.collect_status === 'collecting') return '采集中'
+  return '待采集'
 }
