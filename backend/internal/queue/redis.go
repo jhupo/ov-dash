@@ -68,6 +68,14 @@ func (c *Client) Dequeue(ctx context.Context, queueName string, timeout time.Dur
 	return &job, nil
 }
 
+func (c *Client) Redis() *redis.Client {
+	return c.redis
+}
+
+func (c *Client) Key(name string) string {
+	return c.key(name)
+}
+
 func (c *Client) key(name string) string {
 	return fmt.Sprintf("%s:%s", c.prefix, name)
 }

@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"ov-dash/backend/internal/config"
+	"ov-dash/backend/internal/events"
+	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/internal/queue"
 )
 
 type JobsHandler struct {
-	queue  *queue.Client
-	worker config.WorkerConfig
+	runtime *platform.Runtime
 }
 
 type CreateJobRequest struct {
@@ -18,8 +18,8 @@ type CreateJobRequest struct {
 	Payload map[string]any `json:"payload"`
 }
 
-func NewJobsHandler(queue *queue.Client, worker config.WorkerConfig) *JobsHandler {
-	return &JobsHandler{queue: queue, worker: worker}
+func NewJobsHandler(runtime *platform.Runtime) *JobsHandler {
+	return &JobsHandler{runtime: runtime}
 }
 
 func (h *JobsHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -39,10 +39,14 @@ func (h *JobsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.queue.Enqueue(r.Context(), h.worker.QueueName, job); err != nil {
+	if err := h.runtime.Queue.Enqueue(r.Context(), h.runtime.Config.Worker.QueueName, job); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "enqueue_failed"})
 		return
 	}
+	h.runtime.Events.Publish(r.Context(), events.New("job.enqueued", "http.jobs", map[string]any{
+		"job_id":   job.ID,
+		"job_type": job.Type,
+	}))
 
 	writeJSON(w, http.StatusAccepted, job)
 }

@@ -7,8 +7,7 @@ import (
 	"syscall"
 
 	"ov-dash/backend/internal/config"
-	"ov-dash/backend/internal/db"
-	"ov-dash/backend/internal/queue"
+	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/internal/worker"
 	"ov-dash/backend/pkg/logging"
 
@@ -20,31 +19,18 @@ func main() {
 	defer stop()
 
 	cfg := config.Load()
-	logger := logging.New(cfg.App.Env)
-	defer func() {
-		_ = logger.Sync()
-	}()
-
-	pg, err := db.Open(ctx, cfg.Postgres)
+	runtime, err := platform.Open(ctx, cfg)
 	if err != nil {
-		logger.Fatal("connect postgres", zap.Error(err))
+		logger := logging.New(cfg.App.Env)
+		logger.Fatal("open platform runtime", zap.Error(err))
 	}
-	defer pg.Close()
-
-	redisClient, err := queue.Open(ctx, cfg.Redis)
-	if err != nil {
-		logger.Fatal("connect redis", zap.Error(err))
-	}
-	defer redisClient.Close()
+	defer runtime.Close()
 
 	runner := worker.NewRunner(worker.RunnerDeps{
-		Config: cfg,
-		DB:     pg,
-		Queue:  redisClient,
-		Logger: logger,
+		Runtime: runtime,
 	})
 
 	if err := runner.Run(ctx); err != nil {
-		logger.Fatal("worker stopped", zap.Error(err))
+		runtime.Logger.Fatal("worker stopped", zap.Error(err))
 	}
 }

@@ -100,9 +100,14 @@ The backend is a Go service skeleton under `backend/` with separate API and work
 
 - `backend/cmd/api`: HTTP API process.
 - `backend/cmd/worker`: Redis queue worker process.
+- `backend/internal/platform`: Shared backend runtime for database, cache, queue, events, logs, and proxy.
+- `backend/internal/cache`: Redis-backed cache facade.
 - `backend/internal/config`: Environment-driven application configuration.
+- `backend/internal/database`: Database management helpers, including SQL migrations.
 - `backend/internal/db`: PostgreSQL connection pool setup via `pgx`.
+- `backend/internal/events`: In-process event flow center.
 - `backend/internal/http`: Router, middleware, health checks, and job enqueue endpoint.
+- `backend/internal/modules/proxy`: SOCKS5 proxy settings and reusable proxied HTTP client factory.
 - `backend/internal/queue`: Redis-backed queue primitives.
 - `backend/internal/worker`: Worker runner and Python script executor.
 - `backend/pkg/logging`: Shared Zap logger factory.

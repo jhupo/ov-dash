@@ -5,53 +5,43 @@ import (
 	"slices"
 	"time"
 
-	"ov-dash/backend/internal/config"
-	"ov-dash/backend/internal/db"
 	"ov-dash/backend/internal/modules/apps"
 	"ov-dash/backend/internal/modules/chats"
 	"ov-dash/backend/internal/modules/dashboard"
-	"ov-dash/backend/internal/modules/proxy"
 	"ov-dash/backend/internal/modules/tasks"
 	"ov-dash/backend/internal/modules/users"
-	"ov-dash/backend/internal/queue"
+	"ov-dash/backend/internal/platform"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"go.uber.org/zap"
 )
 
-type RouterDeps struct {
-	Config config.Config
-	DB     *db.Pool
-	Queue  *queue.Client
-	Logger *zap.Logger
-}
-
-func NewRouter(deps RouterDeps) http.Handler {
+func NewRouter(runtime *platform.Runtime) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(requestLogger(deps.Logger))
+	r.Use(requestLogger(runtime.Logger))
 	r.Use(middleware.Recoverer)
-	r.Use(cors(deps.Config.HTTP.AllowedOrigins))
+	r.Use(cors(runtime.Config.HTTP.AllowedOrigins))
 	r.Use(middleware.Timeout(30 * time.Second))
 
-	health := NewHealthHandler(deps.DB, deps.Queue)
+	health := NewHealthHandler(runtime.DB, runtime.Queue)
 
 	r.Get("/healthz", health.Liveness)
 	r.Get("/readyz", health.Readiness)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		proxySettings := NewProxySettingsHandler(proxy.NewService(proxy.NewRepository(deps.DB)))
+		proxySettings := NewProxySettingsHandler(runtime.Proxy)
 
 		r.Get("/health", health.Readiness)
-		r.Post("/jobs", NewJobsHandler(deps.Queue, deps.Config.Worker).Create)
+		r.Get("/platform", NewPlatformHandler(runtime).Status)
+		r.Post("/jobs", NewJobsHandler(runtime).Create)
 		r.Get("/dashboard", NewDashboardHandler(dashboard.NewService()).Snapshot)
-		r.Get("/tasks", NewTasksHandler(tasks.NewService(tasks.NewRepository(deps.DB))).List)
-		r.Get("/users", NewUsersHandler(users.NewService(users.NewRepository(deps.DB))).List)
-		r.Get("/apps", NewAppsHandler(apps.NewService(apps.NewRepository(deps.DB))).List)
-		r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(deps.DB))).ListConversations)
+		r.Get("/tasks", NewTasksHandler(tasks.NewService(tasks.NewRepository(runtime.DB))).List)
+		r.Get("/users", NewUsersHandler(users.NewService(users.NewRepository(runtime.DB))).List)
+		r.Get("/apps", NewAppsHandler(apps.NewService(apps.NewRepository(runtime.DB))).List)
+		r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(runtime.DB))).ListConversations)
 		r.Get("/proxy-settings", proxySettings.Get)
 		r.Put("/proxy-settings", proxySettings.Update)
 	})
