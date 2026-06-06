@@ -56,7 +56,7 @@ func (s *Service) Save(ctx context.Context, input SaveInput) (PublicConnection, 
 		input.AuthType = "password"
 	}
 	if input.CollectInterval == 0 {
-		input.CollectInterval = 300
+		input.CollectInterval = 60
 	}
 	if input.Name == "" {
 		return PublicConnection{}, ErrNameRequired

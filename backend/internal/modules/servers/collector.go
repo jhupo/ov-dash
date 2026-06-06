@@ -66,11 +66,11 @@ func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error
 	}
 	defer client.Close()
 
-	if err := runSSH(client, installCommand()); err != nil {
+	if err := runSSH(ctx, client, installCommand()); err != nil {
 		return Metric{}, err
 	}
 
-	output, err := outputSSH(client, agentPath)
+	output, err := outputSSH(ctx, client, agentPath)
 	if err != nil {
 		return Metric{}, err
 	}
@@ -137,12 +137,12 @@ func authMethods(item Connection) []ssh.AuthMethod {
 	return methods
 }
 
-func runSSH(client *ssh.Client, command string) error {
-	_, err := outputSSH(client, command)
+func runSSH(ctx context.Context, client *ssh.Client, command string) error {
+	_, err := outputSSH(ctx, client, command)
 	return err
 }
 
-func outputSSH(client *ssh.Client, command string) (string, error) {
+func outputSSH(ctx context.Context, client *ssh.Client, command string) (string, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return "", err
@@ -153,14 +153,26 @@ func outputSSH(client *ssh.Client, command string) (string, error) {
 	var stderr bytes.Buffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr
-	if err := session.Run(command); err != nil {
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Run(command)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Close()
+		return "", ctx.Err()
+	case err := <-done:
+		if err == nil {
+			return stdout.String(), nil
+		}
 		message := strings.TrimSpace(stderr.String())
 		if message != "" {
 			return "", fmt.Errorf("%w: %s", err, message)
 		}
 		return "", err
 	}
-	return stdout.String(), nil
 }
 
 func installCommand() string {

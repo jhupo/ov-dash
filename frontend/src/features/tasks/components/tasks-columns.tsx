@@ -36,7 +36,9 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='任务' />
     ),
-    cell: ({ row }) => <div className='w-20'>{row.getValue('id')}</div>,
+    cell: ({ row }) => (
+      <div className='w-32 truncate font-mono text-xs'>{row.getValue('id')}</div>
+    ),
     enableSorting: false,
     enableHiding: false,
   },
@@ -46,7 +48,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
       <DataTableColumnHeader column={column} title='标题' />
     ),
     meta: {
-      className: 'ps-1 max-w-0 w-2/3',
+      className: 'ps-1 min-w-[24rem]',
       tdClassName: 'ps-4',
     },
     cell: ({ row }) => {
@@ -55,8 +57,8 @@ export const tasksColumns: ColumnDef<Task>[] = [
       return (
         <div className='flex min-w-0 flex-col gap-1'>
           <div className='flex min-w-0 items-center gap-2'>
-          {label && <Badge variant='outline'>{label.label}</Badge>}
-          <span className='truncate font-medium'>{row.getValue('title')}</span>
+            {label && <Badge variant='outline'>{label.label}</Badge>}
+            <span className='truncate font-medium'>{row.getValue('title')}</span>
           </div>
           {row.original.description && (
             <span className='truncate text-xs text-muted-foreground'>
@@ -73,7 +75,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
       <DataTableColumnHeader column={column} title='来源' />
     ),
     cell: ({ row }) => (
-      <div className='max-w-40 truncate text-sm text-muted-foreground'>
+      <div className='max-w-48 truncate text-sm text-muted-foreground'>
         {row.original.assignee || '-'}
       </div>
     ),

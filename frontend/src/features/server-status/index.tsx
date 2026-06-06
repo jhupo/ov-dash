@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -27,6 +27,7 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogHeader,
   DialogTitle,
@@ -64,7 +65,7 @@ export function ServerStatus() {
   const servers = useQuery({
     queryKey: ['server-connections'],
     queryFn: listServerConnections,
-    refetchInterval: 10_000,
+    refetchInterval: 3_000,
   })
 
   const items = servers.data ?? []
@@ -175,7 +176,12 @@ function SummaryBar({
   isFetching: boolean
   onRefresh: () => void
 }) {
-  const time = new Date().toLocaleTimeString('zh-CN', {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const time = now.toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -424,7 +430,7 @@ function ServerStatsDialog({
     queryKey: ['server-metrics', server?.id, range],
     queryFn: () => listServerMetrics(server!.id, range),
     enabled: !!server,
-    refetchInterval: 30_000,
+    refetchInterval: range === '1h' ? 3_000 : 30_000,
   })
   const points = useMemo(
     () => (metrics.data ?? []).map(toChartPoint),
@@ -436,12 +442,40 @@ function ServerStatsDialog({
 
   return (
     <Dialog open={!!server} onOpenChange={onOpenChange}>
-      <DialogContent className='max-h-[92vh] overflow-y-auto sm:max-w-6xl'>
-        <DialogHeader>
+      <DialogContent className='max-h-[92vh] overflow-y-auto p-0 sm:max-w-[1160px]'>
+        <DialogHeader className='sr-only'>
           <DialogTitle>{server?.name ?? '负载统计'}</DialogTitle>
         </DialogHeader>
-        <div className='space-y-4'>
-          <div className='flex flex-wrap gap-2'>
+        <div className='relative space-y-4 p-6'>
+          <DialogClose asChild>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              className='absolute top-4 right-4'
+              aria-label='关闭'
+            >
+              ×
+            </Button>
+          </DialogClose>
+          <div className='flex items-center justify-center'>
+            <div className='inline-flex rounded-md border bg-muted/60 p-1'>
+              {['负载', '延迟'].map((label) => (
+                <Button
+                  key={label}
+                  type='button'
+                  size='sm'
+                  variant={label === '负载' ? 'secondary' : 'ghost'}
+                  className='h-8 px-5'
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <div className='flex items-center justify-center'>
+            <div className='inline-flex rounded-md border bg-muted/60 p-1'>
             {[
               ['实时', '1h'],
               ['4小时', '4h'],
@@ -454,11 +488,13 @@ function ServerStatsDialog({
                 type='button'
                 size='sm'
                 variant={range === value ? 'secondary' : 'ghost'}
+                className='h-8 px-4'
                 onClick={() => setRange(value)}
               >
                 {label}
               </Button>
             ))}
+            </div>
           </div>
 
           {points.length ? (
@@ -528,7 +564,7 @@ function ServerStatsDialog({
               />
             </div>
           ) : (
-            <div className='flex min-h-64 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground'>
+            <div className='flex min-h-[470px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground'>
               {metrics.isFetching ? '正在读取负载统计...' : '暂无采集历史'}
             </div>
           )}

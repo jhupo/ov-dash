@@ -153,7 +153,7 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 			r.runtime.Logger.Error("create server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
 		}
-		taskID := serverCollectTaskID(job.ID)
+		taskID := serverCollectTaskID(item.ID)
 		if err := taskRepository.Upsert(ctx, tasks.UpsertInput{
 			ID:          taskID,
 			Title:       "采集服务器 " + item.Name,
@@ -182,6 +182,6 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 	}
 }
 
-func serverCollectTaskID(jobID string) string {
-	return "srvcol_" + jobID
+func serverCollectTaskID(serverID string) string {
+	return "srvcol_" + serverID
 }

@@ -141,6 +141,9 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 }
 
 func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connection, error) {
+	if err := r.ResetStaleCollecting(ctx, 2*time.Minute); err != nil {
+		return nil, err
+	}
 	rows, err := r.db.Query(ctx, `
 		SELECT
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
@@ -173,6 +176,19 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *Repository) ResetStaleCollecting(ctx context.Context, maxAge time.Duration) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE server_connections
+		SET collect_status = 'pending',
+		    collect_error = '采集超时，已重新进入队列',
+		    next_collect_at = now(),
+		    updated_at = now()
+		WHERE collect_status = 'collecting'
+		  AND updated_at < now() - $1::interval
+	`, maxAge.String())
+	return err
 }
 
 func (r *Repository) MarkCollectQueued(ctx context.Context, id string) error {
@@ -366,8 +382,8 @@ func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
 		SET collector_installed = true,
 		    collect_status = 'ok',
 		    collect_error = '',
-		    last_collected_at = $2,
-		    next_collect_at = $2 + make_interval(secs => collect_interval_seconds),
+		    last_collected_at = $2::timestamptz,
+		    next_collect_at = $2::timestamptz + make_interval(secs => collect_interval_seconds),
 		    updated_at = now()
 		WHERE id = $1
 	`, metric.ServerID, metric.CollectedAt)
