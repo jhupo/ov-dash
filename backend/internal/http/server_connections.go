@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"ov-dash/backend/internal/modules/servers"
 
@@ -29,7 +31,7 @@ type saveServerConnectionRequest struct {
 	AuthType    string  `json:"auth_type"`
 	Password    *string `json:"password"`
 	PrivateKey  *string `json:"private_key"`
-	Passphrase  *string `json:"passphrase"`
+	ExpiresAt   *string `json:"expires_at"`
 	ClearSecret bool    `json:"clear_secret"`
 }
 
@@ -51,6 +53,11 @@ func (h *ServerConnectionsHandler) Save(w http.ResponseWriter, r *http.Request) 
 	if id := chi.URLParam(r, "id"); id != "" {
 		payload.ID = id
 	}
+	expiresAt, err := parseOptionalTime(payload.ExpiresAt)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_expires_at"})
+		return
+	}
 
 	item, err := h.service.Save(r.Context(), servers.SaveInput{
 		ID:          payload.ID,
@@ -63,7 +70,7 @@ func (h *ServerConnectionsHandler) Save(w http.ResponseWriter, r *http.Request) 
 		AuthType:    payload.AuthType,
 		Password:    payload.Password,
 		PrivateKey:  payload.PrivateKey,
-		Passphrase:  payload.Passphrase,
+		ExpiresAt:   expiresAt,
 		ClearSecret: payload.ClearSecret,
 	})
 	if err != nil {
@@ -90,4 +97,21 @@ func (h *ServerConnectionsHandler) Delete(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func parseOptionalTime(raw *string) (*time.Time, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	value := strings.TrimSpace(*raw)
+	if value == "" {
+		return nil, nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return &parsed, nil
+		}
+	}
+	return nil, errors.New("invalid time")
 }

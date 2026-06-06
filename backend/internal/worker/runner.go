@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ov-dash/backend/internal/events"
+	"ov-dash/backend/internal/modules/servers"
 	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/internal/queue"
 
@@ -43,6 +44,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		r.loopServerCollection(ctx)
+	}()
+
 	for i := 0; i < r.runtime.Config.Worker.Concurrency; i++ {
 		wg.Add(1)
 		go func(workerID int) {
@@ -107,4 +114,22 @@ func (r *Runner) publishJobEvent(ctx context.Context, eventType string, job queu
 	payload["job_id"] = job.ID
 	payload["job_type"] = job.Type
 	r.runtime.Events.Publish(ctx, events.New(eventType, "worker.runner", payload))
+}
+
+func (r *Runner) loopServerCollection(ctx context.Context) {
+	collector := servers.NewCollector(servers.NewRepository(r.runtime.DB))
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	r.runtime.Logger.Info("server collector started")
+	collector.CollectAll(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			collector.CollectAll(ctx)
+		}
+	}
 }

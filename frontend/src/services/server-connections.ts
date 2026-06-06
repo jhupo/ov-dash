@@ -13,10 +13,41 @@ export type ServerConnection = {
   auth_type: ServerAuthType
   has_password: boolean
   has_private_key: boolean
-  has_passphrase: boolean
   connection_hint: string
+  expires_at: string | null
+  collector_installed: boolean
+  collect_status: 'pending' | 'collecting' | 'ok' | 'error'
+  collect_error: string
+  last_collected_at: string | null
+  metric: ServerMetric | null
   created_at: string
   updated_at: string
+}
+
+export type ServerMetric = {
+  server_id: string
+  cpu_percent: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+  swap_used_bytes: number
+  swap_total_bytes: number
+  disk_used_bytes: number
+  disk_total_bytes: number
+  network_rx_bytes: number
+  network_tx_bytes: number
+  network_rx_rate_bps: number
+  network_tx_rate_bps: number
+  load1: number
+  load5: number
+  load15: number
+  uptime_seconds: number
+  architecture: string
+  virtualization: string
+  os_name: string
+  cpu_model: string
+  gpu_model: string
+  raw: Record<string, unknown>
+  collected_at: string
 }
 
 export type SaveServerConnectionPayload = {
@@ -30,7 +61,7 @@ export type SaveServerConnectionPayload = {
   auth_type: ServerAuthType
   password?: string
   private_key?: string
-  passphrase?: string
+  expires_at?: string
   clear_secret?: boolean
 }
 
