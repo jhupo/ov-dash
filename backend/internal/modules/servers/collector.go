@@ -190,12 +190,16 @@ type agentPayload struct {
 	Load1            float64 `json:"load1"`
 	Load5            float64 `json:"load5"`
 	Load15           float64 `json:"load15"`
+	TCPConnections   int64   `json:"tcp_connections"`
+	UDPConnections   int64   `json:"udp_connections"`
+	ProcessCount     int64   `json:"process_count"`
 	UptimeSeconds    int64   `json:"uptime_seconds"`
 	Architecture     string  `json:"architecture"`
 	Virtualization   string  `json:"virtualization"`
 	OSName           string  `json:"os_name"`
 	CPUModel         string  `json:"cpu_model"`
 	GPUModel         string  `json:"gpu_model"`
+	Region           string  `json:"region"`
 }
 
 func (p agentPayload) metric(serverID string, collectedAt time.Time) Metric {
@@ -218,12 +222,16 @@ func (p agentPayload) metric(serverID string, collectedAt time.Time) Metric {
 		Load1:            p.Load1,
 		Load5:            p.Load5,
 		Load15:           p.Load15,
+		TCPConnections:   p.TCPConnections,
+		UDPConnections:   p.UDPConnections,
+		ProcessCount:     p.ProcessCount,
 		UptimeSeconds:    p.UptimeSeconds,
 		Architecture:     p.Architecture,
 		Virtualization:   p.Virtualization,
 		OSName:           p.OSName,
 		CPUModel:         p.CPUModel,
 		GPUModel:         p.GPUModel,
+		Region:           p.Region,
 		Raw:              raw,
 		CollectedAt:      collectedAt,
 	}

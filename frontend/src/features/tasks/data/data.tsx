@@ -23,6 +23,10 @@ export const labels = [
     value: 'documentation',
     label: '文档',
   },
+  {
+    value: 'server',
+    label: '服务器',
+  },
 ]
 
 export const statuses = [
@@ -50,6 +54,11 @@ export const statuses = [
     label: '已取消',
     value: 'canceled' as const,
     icon: CircleOff,
+  },
+  {
+    label: '异常',
+    value: 'failed' as const,
+    icon: AlertCircle,
   },
 ]
 

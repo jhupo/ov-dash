@@ -43,12 +43,16 @@ load_values=$(cat /proc/loadavg 2>/dev/null || echo "0 0 0")
 load1=$(echo "$load_values" | awk '{print $1+0}')
 load5=$(echo "$load_values" | awk '{print $2+0}')
 load15=$(echo "$load_values" | awk '{print $3+0}')
+tcp_connections=$(awk 'NR>1 {count++} END {print count+0}' /proc/net/tcp 2>/dev/null || echo 0)
+udp_connections=$(awk 'NR>1 {count++} END {print count+0}' /proc/net/udp 2>/dev/null || echo 0)
+process_count=$(find /proc -maxdepth 1 -type d -regex '/proc/[0-9]+' 2>/dev/null | wc -l | awk '{print $1+0}')
 uptime_seconds=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
 arch=$(uname -m 2>/dev/null || echo "")
 virt=$(systemd-detect-virt 2>/dev/null || true)
 os_name=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "")
 cpu_model=$(awk -F': ' '/model name|Hardware/ {print $2; exit}' /proc/cpuinfo 2>/dev/null | sed 's/"/\\"/g')
 gpu_model=$(command -v lspci >/dev/null 2>&1 && lspci 2>/dev/null | awk -F': ' '/VGA|3D|Display/ {print $2; exit}' | sed 's/"/\\"/g' || true)
+region=$(readlink /etc/localtime 2>/dev/null | awk -F'zoneinfo/' '{print $2}' | awk -F/ '{print $NF}' || true)
 
 printf '{'
 printf '"cpu_percent":%s,' "$(num "$cpu_percent")"
@@ -65,11 +69,15 @@ printf '"network_tx_rate_bps":%s,' "$(num "$tx_rate")"
 printf '"load1":%s,' "$(num "$load1")"
 printf '"load5":%s,' "$(num "$load5")"
 printf '"load15":%s,' "$(num "$load15")"
+printf '"tcp_connections":%s,' "$(num "$tcp_connections")"
+printf '"udp_connections":%s,' "$(num "$udp_connections")"
+printf '"process_count":%s,' "$(num "$process_count")"
 printf '"uptime_seconds":%s,' "$(num "$uptime_seconds")"
 printf '"architecture":"%s",' "$arch"
 printf '"virtualization":"%s",' "$virt"
 printf '"os_name":"%s",' "$(printf '%s' "$os_name" | sed 's/"/\\"/g')"
 printf '"cpu_model":"%s",' "$cpu_model"
-printf '"gpu_model":"%s"' "$gpu_model"
+printf '"gpu_model":"%s",' "$gpu_model"
+printf '"region":"%s"' "$(printf '%s' "$region" | sed 's/"/\\"/g')"
 printf '}'
 `

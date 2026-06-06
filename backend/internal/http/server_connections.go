@@ -32,6 +32,7 @@ type saveServerConnectionRequest struct {
 	Password    *string `json:"password"`
 	PrivateKey  *string `json:"private_key"`
 	ExpiresAt   *string `json:"expires_at"`
+	CollectInterval int `json:"collect_interval_seconds"`
 	ClearSecret bool    `json:"clear_secret"`
 }
 
@@ -71,6 +72,7 @@ func (h *ServerConnectionsHandler) Save(w http.ResponseWriter, r *http.Request) 
 		Password:    payload.Password,
 		PrivateKey:  payload.PrivateKey,
 		ExpiresAt:   expiresAt,
+		CollectInterval: payload.CollectInterval,
 		ClearSecret: payload.ClearSecret,
 	})
 	if err != nil {
@@ -89,6 +91,26 @@ func (h *ServerConnectionsHandler) Save(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *ServerConnectionsHandler) Metrics(w http.ResponseWriter, r *http.Request) {
+	since := time.Now().Add(-time.Hour)
+	switch strings.TrimSpace(r.URL.Query().Get("range")) {
+	case "4h":
+		since = time.Now().Add(-4 * time.Hour)
+	case "1d":
+		since = time.Now().Add(-24 * time.Hour)
+	case "7d":
+		since = time.Now().Add(-7 * 24 * time.Hour)
+	case "30d":
+		since = time.Now().Add(-30 * 24 * time.Hour)
+	}
+	items, err := h.service.Samples(r.Context(), chi.URLParam(r, "id"), since)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_metrics_list_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *ServerConnectionsHandler) Delete(w http.ResponseWriter, r *http.Request) {

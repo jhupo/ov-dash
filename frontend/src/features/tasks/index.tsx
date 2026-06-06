@@ -15,6 +15,7 @@ export function Tasks() {
   const tasks = useQuery({
     queryKey: ['tasks'],
     queryFn: getTasks,
+    refetchInterval: 5000,
   })
 
   return (
@@ -31,7 +32,7 @@ export function Tasks() {
           <div>
             <h2 className='text-2xl font-bold tracking-tight'>任务</h2>
             <p className='text-muted-foreground'>
-              这里是本月任务列表。
+              查看后台事件队列和采集任务状态。
             </p>
           </div>
           <TasksPrimaryButtons />

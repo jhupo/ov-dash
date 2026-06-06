@@ -15,6 +15,8 @@ export type ServerConnection = {
   has_private_key: boolean
   connection_hint: string
   expires_at: string | null
+  collect_interval_seconds: number
+  next_collect_at: string
   collector_installed: boolean
   collect_status: 'pending' | 'collecting' | 'ok' | 'error'
   collect_error: string
@@ -40,12 +42,16 @@ export type ServerMetric = {
   load1: number
   load5: number
   load15: number
+  tcp_connections: number
+  udp_connections: number
+  process_count: number
   uptime_seconds: number
   architecture: string
   virtualization: string
   os_name: string
   cpu_model: string
   gpu_model: string
+  region: string
   raw: Record<string, unknown>
   collected_at: string
 }
@@ -62,6 +68,7 @@ export type SaveServerConnectionPayload = {
   password?: string
   private_key?: string
   expires_at?: string
+  collect_interval_seconds?: number
   clear_secret?: boolean
 }
 
@@ -87,4 +94,19 @@ export async function saveServerConnection(
 
 export async function deleteServerConnection(id: string): Promise<void> {
   await httpClient.delete(`/server-connections/${id}`)
+}
+
+type MetricsResponse = {
+  items: ServerMetric[]
+}
+
+export async function listServerMetrics(
+  id: string,
+  range: string
+): Promise<ServerMetric[]> {
+  const response = await httpClient.get<MetricsResponse>(
+    `/server-connections/${id}/metrics`,
+    { params: { range } }
+  )
+  return response.data.items
 }

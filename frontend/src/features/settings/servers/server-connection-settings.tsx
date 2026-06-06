@@ -61,7 +61,6 @@ import {
 const formSchema = z.object({
   name: z.string().trim().min(1, '请输入名称。'),
   group_name: z.string().trim(),
-  region: z.string().trim(),
   host: z.string().trim().min(1, '请输入服务器 IP 或域名。'),
   port: z
     .string()
@@ -76,6 +75,10 @@ const formSchema = z.object({
   private_key: z.string(),
   key_file_name: z.string(),
   expires_at: z.string(),
+  collect_interval_seconds: z.string().refine((value) => {
+    const seconds = Number(value)
+    return Number.isInteger(seconds) && seconds >= 30
+  }, '采集间隔不能低于 30 秒。'),
   clear_secret: z.boolean(),
 })
 
@@ -84,7 +87,6 @@ type FormValues = z.infer<typeof formSchema>
 const defaultValues: FormValues = {
   name: '',
   group_name: '',
-  region: '',
   host: '',
   port: '22',
   username: 'root',
@@ -93,6 +95,7 @@ const defaultValues: FormValues = {
   private_key: '',
   key_file_name: '',
   expires_at: '',
+  collect_interval_seconds: '300',
   clear_secret: false,
 }
 
@@ -159,7 +162,7 @@ export function ServerConnectionSettings() {
                 <TableHead>主机</TableHead>
                 <TableHead>用户</TableHead>
                 <TableHead>认证</TableHead>
-                <TableHead>地区</TableHead>
+                <TableHead>周期</TableHead>
                 <TableHead>到期</TableHead>
                 <TableHead>采集</TableHead>
                 <TableHead className='w-24 text-right'>操作</TableHead>
@@ -179,7 +182,7 @@ export function ServerConnectionSettings() {
                       active={item.has_password || item.has_private_key}
                     />
                   </TableCell>
-                  <TableCell>{item.region || '-'}</TableCell>
+                  <TableCell>{formatInterval(item.collect_interval_seconds)}</TableCell>
                   <TableCell>{formatDate(item.expires_at)}</TableCell>
                   <TableCell>
                     <CollectBadge item={item} />
@@ -241,12 +244,13 @@ export function ServerConnectionSettings() {
             id: editing?.id,
             name: values.name.trim(),
             group_name: values.group_name.trim(),
-            region: values.region.trim(),
+            region: '',
             host: values.host.trim(),
             port: Number(values.port),
             username: values.username.trim(),
             auth_type: values.auth_type,
             expires_at: values.expires_at || undefined,
+            collect_interval_seconds: Number(values.collect_interval_seconds),
             ...(values.password ? { password: values.password } : {}),
             ...(values.private_key ? { private_key: values.private_key } : {}),
             ...(values.clear_secret ? { clear_secret: true } : {}),
@@ -324,7 +328,6 @@ function ServerConnectionDialog({
         ? {
             name: item.name,
             group_name: item.group_name,
-            region: item.region,
             host: item.host,
             port: String(item.port || 22),
             username: item.username,
@@ -333,6 +336,9 @@ function ServerConnectionDialog({
             private_key: '',
             key_file_name: item.has_private_key ? '已保存私钥' : '',
             expires_at: item.expires_at ? item.expires_at.slice(0, 10) : '',
+            collect_interval_seconds: String(
+              item.collect_interval_seconds || 300
+            ),
             clear_secret: false,
           }
         : defaultValues
@@ -364,19 +370,13 @@ function ServerConnectionDialog({
                 <FileKey2 className='size-4 text-muted-foreground' />
                 基础信息
               </div>
-              <div className='grid gap-4 md:grid-cols-3'>
+              <div className='grid gap-4 md:grid-cols-2'>
                 <TextField control={form.control} name='name' label='名称' />
                 <TextField
                   control={form.control}
                   name='group_name'
                   label='分组'
                   placeholder='默认'
-                />
-                <TextField
-                  control={form.control}
-                  name='region'
-                  label='地区'
-                  placeholder='HK / US'
                 />
               </div>
               <div className='grid gap-4 md:grid-cols-[minmax(0,1fr)_9rem]'>
@@ -398,6 +398,35 @@ function ServerConnectionDialog({
                   name='username'
                   label='用户名'
                 />
+                <FormField
+                  control={form.control}
+                  name='collect_interval_seconds'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>采集周期</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={(value) => field.onChange(value)}
+                      >
+                        <FormControl>
+                          <SelectTrigger className='w-full'>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value='60'>1 分钟</SelectItem>
+                          <SelectItem value='300'>5 分钟</SelectItem>
+                          <SelectItem value='900'>15 分钟</SelectItem>
+                          <SelectItem value='1800'>30 分钟</SelectItem>
+                          <SelectItem value='3600'>1 小时</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+              <div className='grid gap-4 md:grid-cols-2'>
                 <TextField
                   control={form.control}
                   name='expires_at'
@@ -581,4 +610,11 @@ function TextField({
 function formatDate(value: string | null) {
   if (!value) return '未设置'
   return new Date(value).toLocaleDateString('zh-CN')
+}
+
+function formatInterval(seconds: number) {
+  if (!seconds) return '5 分钟'
+  if (seconds < 60) return `${seconds} 秒`
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`
+  return `${Math.round(seconds / 3600)} 小时`
 }

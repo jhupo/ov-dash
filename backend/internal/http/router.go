@@ -48,6 +48,7 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 		r.Put("/proxy-settings", proxySettings.Update)
 		r.Get("/server-connections", serverConnections.List)
 		r.Post("/server-connections", serverConnections.Save)
+		r.Get("/server-connections/{id}/metrics", serverConnections.Metrics)
 		r.Put("/server-connections/{id}", serverConnections.Save)
 		r.Delete("/server-connections/{id}", serverConnections.Delete)
 	})

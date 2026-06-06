@@ -8,6 +8,7 @@ import (
 
 	"ov-dash/backend/internal/events"
 	"ov-dash/backend/internal/modules/servers"
+	"ov-dash/backend/internal/modules/tasks"
 	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/internal/queue"
 
@@ -33,6 +34,11 @@ func NewRunner(deps RunnerDeps) *Runner {
 	}
 	r.handlers = map[string]Handler{
 		"python.script": NewPythonScriptHandler(deps.Runtime.Config.Python, deps.Runtime.Logger),
+		"server.collect": NewServerCollectHandler(
+			servers.NewCollector(servers.NewRepository(deps.Runtime.DB)),
+			tasks.NewRepository(deps.Runtime.DB),
+			deps.Runtime.Logger,
+		),
 		"noop":          NoopHandler{},
 	}
 	return r
@@ -47,7 +53,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		r.loopServerCollection(ctx)
+		r.loopServerCollectionScheduler(ctx)
 	}()
 
 	for i := 0; i < r.runtime.Config.Worker.Concurrency; i++ {
@@ -116,20 +122,66 @@ func (r *Runner) publishJobEvent(ctx context.Context, eventType string, job queu
 	r.runtime.Events.Publish(ctx, events.New(eventType, "worker.runner", payload))
 }
 
-func (r *Runner) loopServerCollection(ctx context.Context) {
-	collector := servers.NewCollector(servers.NewRepository(r.runtime.DB))
-	ticker := time.NewTicker(time.Minute)
+func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {
+	repository := servers.NewRepository(r.runtime.DB)
+	taskRepository := tasks.NewRepository(r.runtime.DB)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	r.runtime.Logger.Info("server collector started")
-	collector.CollectAll(ctx)
+	r.runtime.Logger.Info("server collector scheduler started")
+	r.scheduleServerCollections(ctx, repository, taskRepository)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			collector.CollectAll(ctx)
+			r.scheduleServerCollections(ctx, repository, taskRepository)
 		}
 	}
+}
+
+func (r *Runner) scheduleServerCollections(ctx context.Context, repository *servers.Repository, taskRepository *tasks.Repository) {
+	items, err := repository.DueForCollection(ctx, 50)
+	if err != nil {
+		r.runtime.Logger.Error("list due server collections", zap.Error(err))
+		return
+	}
+	for _, item := range items {
+		job, err := queue.NewJob("server.collect", map[string]any{"server_id": item.ID})
+		if err != nil {
+			r.runtime.Logger.Error("create server collect job", zap.String("server_id", item.ID), zap.Error(err))
+			continue
+		}
+		taskID := serverCollectTaskID(job.ID)
+		if err := taskRepository.Upsert(ctx, tasks.UpsertInput{
+			ID:          taskID,
+			Title:       "采集服务器 " + item.Name,
+			Status:      "todo",
+			Label:       "server",
+			Priority:    "medium",
+			Description: "等待事件队列分发采集任务",
+			Assignee:    item.ConnectionHint(),
+		}); err != nil {
+			r.runtime.Logger.Error("create server collect task", zap.String("server_id", item.ID), zap.Error(err))
+			continue
+		}
+		job.Payload["task_id"] = taskID
+		if err := r.runtime.Queue.Enqueue(ctx, r.runtime.Config.Worker.QueueName, job); err != nil {
+			r.runtime.Logger.Error("enqueue server collect job", zap.String("server_id", item.ID), zap.Error(err))
+			continue
+		}
+		if err := repository.MarkCollectQueued(ctx, item.ID); err != nil {
+			r.runtime.Logger.Error("mark server collect queued", zap.String("server_id", item.ID), zap.Error(err))
+		}
+		r.runtime.Events.Publish(ctx, events.New("server.collect.enqueued", "worker.scheduler", map[string]any{
+			"job_id":    job.ID,
+			"task_id":   taskID,
+			"server_id": item.ID,
+		}))
+	}
+}
+
+func serverCollectTaskID(jobID string) string {
+	return "srvcol_" + jobID
 }

@@ -55,6 +55,9 @@ func (s *Service) Save(ctx context.Context, input SaveInput) (PublicConnection, 
 	if input.AuthType == "" {
 		input.AuthType = "password"
 	}
+	if input.CollectInterval == 0 {
+		input.CollectInterval = 300
+	}
 	if input.Name == "" {
 		return PublicConnection{}, ErrNameRequired
 	}
@@ -70,6 +73,9 @@ func (s *Service) Save(ctx context.Context, input SaveInput) (PublicConnection, 
 	if input.AuthType != "password" && input.AuthType != "key" {
 		return PublicConnection{}, ErrInvalidAuthType
 	}
+	if input.CollectInterval < 30 {
+		input.CollectInterval = 30
+	}
 
 	item, err := s.repository.Upsert(ctx, input)
 	if err != nil {
@@ -80,4 +86,8 @@ func (s *Service) Save(ctx context.Context, input SaveInput) (PublicConnection, 
 
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.repository.Delete(ctx, strings.TrimSpace(id))
+}
+
+func (s *Service) Samples(ctx context.Context, id string, since time.Time) ([]Metric, error) {
+	return s.repository.Samples(ctx, strings.TrimSpace(id), since)
 }

@@ -3,6 +3,15 @@ import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
+import {
   Cpu,
   HardDrive,
   Info,
@@ -10,6 +19,7 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import {
+  listServerMetrics,
   listServerConnections,
   type ServerConnection,
   type ServerMetric,
@@ -35,9 +45,22 @@ type MetricRow = {
   tone: 'green' | 'yellow' | 'red' | 'muted'
 }
 
+type ChartPoint = {
+  time: string
+  cpu: number
+  memory: number
+  disk: number
+  network_rx: number
+  network_tx: number
+  tcp: number
+  udp: number
+  processes: number
+}
+
 export function ServerStatus() {
   const [activeGroup, setActiveGroup] = useState('全部')
   const [detail, setDetail] = useState<ServerConnection | null>(null)
+  const [stats, setStats] = useState<ServerConnection | null>(null)
   const servers = useQuery({
     queryKey: ['server-connections'],
     queryFn: listServerConnections,
@@ -113,6 +136,7 @@ export function ServerStatus() {
                 <ServerCard
                   key={server.id}
                   server={server}
+                  onStats={() => setStats(server)}
                   onDetail={() => setDetail(server)}
                 />
               ))}
@@ -131,6 +155,7 @@ export function ServerStatus() {
       </Main>
 
       <ServerDetailDialog server={detail} onOpenChange={() => setDetail(null)} />
+      <ServerStatsDialog server={stats} onOpenChange={() => setStats(null)} />
     </>
   )
 }
@@ -210,9 +235,11 @@ function SummaryItem({
 
 function ServerCard({
   server,
+  onStats,
   onDetail,
 }: {
   server: ServerConnection
+  onStats: () => void
   onDetail: () => void
 }) {
   const metric = server.metric
@@ -228,7 +255,7 @@ function ServerCard({
             <button
               type='button'
               className='min-w-0 truncate text-left text-base font-bold underline-offset-4 hover:underline'
-              onClick={onDetail}
+              onClick={onStats}
             >
               {server.name}
             </button>
@@ -382,6 +409,192 @@ function ServerDetailDialog({
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+function ServerStatsDialog({
+  server,
+  onOpenChange,
+}: {
+  server: ServerConnection | null
+  onOpenChange: () => void
+}) {
+  const [range, setRange] = useState('1h')
+  const metrics = useQuery({
+    queryKey: ['server-metrics', server?.id, range],
+    queryFn: () => listServerMetrics(server!.id, range),
+    enabled: !!server,
+    refetchInterval: 30_000,
+  })
+  const points = useMemo(
+    () => (metrics.data ?? []).map(toChartPoint),
+    [metrics.data]
+  )
+  const latest = metrics.data?.length
+    ? metrics.data[metrics.data.length - 1]
+    : (server?.metric ?? null)
+
+  return (
+    <Dialog open={!!server} onOpenChange={onOpenChange}>
+      <DialogContent className='max-h-[92vh] overflow-y-auto sm:max-w-6xl'>
+        <DialogHeader>
+          <DialogTitle>{server?.name ?? '负载统计'}</DialogTitle>
+        </DialogHeader>
+        <div className='space-y-4'>
+          <div className='flex flex-wrap gap-2'>
+            {[
+              ['实时', '1h'],
+              ['4小时', '4h'],
+              ['1天', '1d'],
+              ['7天', '7d'],
+              ['30天', '30d'],
+            ].map(([label, value]) => (
+              <Button
+                key={value}
+                type='button'
+                size='sm'
+                variant={range === value ? 'secondary' : 'ghost'}
+                onClick={() => setRange(value)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+
+          {points.length ? (
+            <div className='grid gap-4 lg:grid-cols-3'>
+              <StatsChart
+                title='CPU'
+                value={latest ? `${latest.cpu_percent.toFixed(2)}%` : '待采集'}
+                data={points}
+                lines={[{ key: 'cpu', name: 'CPU', color: '#f87171' }]}
+                unit='%'
+              />
+              <StatsChart
+                title='内存'
+                value={
+                  latest
+                    ? `${formatBytes(latest.memory_used_bytes)} / ${formatBytes(latest.memory_total_bytes)}`
+                    : '待采集'
+                }
+                data={points}
+                lines={[{ key: 'memory', name: '内存', color: '#f59e0b' }]}
+                unit='%'
+              />
+              <StatsChart
+                title='磁盘'
+                value={
+                  latest
+                    ? `${formatBytes(latest.disk_used_bytes)} / ${formatBytes(latest.disk_total_bytes)}`
+                    : '待采集'
+                }
+                data={points}
+                lines={[{ key: 'disk', name: '磁盘', color: '#fb7185' }]}
+                unit='%'
+              />
+              <StatsChart
+                title='网络'
+                value={
+                  latest
+                    ? `↑ ${formatRate(latest.network_tx_rate_bps)}  ↓ ${formatRate(latest.network_rx_rate_bps)}`
+                    : '待采集'
+                }
+                data={points}
+                lines={[
+                  { key: 'network_tx', name: '上传', color: '#fb7185' },
+                  { key: 'network_rx', name: '下载', color: '#38bdf8' },
+                ]}
+              />
+              <StatsChart
+                title='连接数'
+                value={
+                  latest
+                    ? `TCP: ${latest.tcp_connections}  UDP: ${latest.udp_connections}`
+                    : '待采集'
+                }
+                data={points}
+                lines={[
+                  { key: 'tcp', name: 'TCP', color: '#f87171' },
+                  { key: 'udp', name: 'UDP', color: '#facc15' },
+                ]}
+              />
+              <StatsChart
+                title='进程数'
+                value={latest ? String(latest.process_count) : '待采集'}
+                data={points}
+                lines={[
+                  { key: 'processes', name: '进程', color: '#f87171' },
+                ]}
+              />
+            </div>
+          ) : (
+            <div className='flex min-h-64 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground'>
+              {metrics.isFetching ? '正在读取负载统计...' : '暂无采集历史'}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function StatsChart({
+  title,
+  value,
+  data,
+  lines,
+  unit = '',
+}: {
+  title: string
+  value: string
+  data: ChartPoint[]
+  lines: { key: keyof ChartPoint; name: string; color: string }[]
+  unit?: string
+}) {
+  return (
+    <div className='h-56 rounded-md border bg-card/80 p-4'>
+      <div className='mb-3 flex items-start justify-between gap-3'>
+        <div className='text-sm font-medium'>{title}</div>
+        <div className='max-w-48 text-right text-sm font-semibold tabular-nums'>
+          {value}
+        </div>
+      </div>
+      <ResponsiveContainer width='100%' height='78%'>
+        <AreaChart data={data}>
+          <CartesianGrid strokeDasharray='3 3' className='stroke-border' />
+          <XAxis
+            dataKey='time'
+            tickLine={false}
+            axisLine={false}
+            tick={{ fontSize: 11 }}
+          />
+          <YAxis hide domain={unit === '%' ? [0, 100] : ['auto', 'auto']} />
+          <Tooltip
+            formatter={(value, name) => [
+              `${Number(value).toFixed(unit === '%' ? 1 : 0)}${unit}`,
+              name,
+            ]}
+            contentStyle={{
+              background: 'hsl(var(--card))',
+              border: '1px solid hsl(var(--border))',
+              borderRadius: 6,
+            }}
+          />
+          {lines.map((line) => (
+            <Area
+              key={String(line.key)}
+              type='monotone'
+              dataKey={line.key}
+              name={line.name}
+              stroke={line.color}
+              fill={line.color}
+              fillOpacity={0.18}
+              strokeWidth={1.5}
+            />
+          ))}
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -556,6 +769,24 @@ function memoryText(metric: ServerMetric | null) {
 function diskText(metric: ServerMetric | null) {
   if (!metric) return '待采集'
   return formatBytes(metric.disk_total_bytes)
+}
+
+function toChartPoint(metric: ServerMetric): ChartPoint {
+  return {
+    time: new Date(metric.collected_at).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }),
+    cpu: metric.cpu_percent,
+    memory: percent(metric.memory_used_bytes, metric.memory_total_bytes),
+    disk: percent(metric.disk_used_bytes, metric.disk_total_bytes),
+    network_rx: metric.network_rx_rate_bps,
+    network_tx: metric.network_tx_rate_bps,
+    tcp: metric.tcp_connections,
+    udp: metric.udp_connections,
+    processes: metric.process_count,
+  }
 }
 
 function formatBytes(value: number) {

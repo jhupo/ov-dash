@@ -53,12 +53,30 @@ export const tasksColumns: ColumnDef<Task>[] = [
       const label = labels.find((label) => label.value === row.original.label)
 
       return (
-        <div className='flex space-x-2'>
+        <div className='flex min-w-0 flex-col gap-1'>
+          <div className='flex min-w-0 items-center gap-2'>
           {label && <Badge variant='outline'>{label.label}</Badge>}
           <span className='truncate font-medium'>{row.getValue('title')}</span>
+          </div>
+          {row.original.description && (
+            <span className='truncate text-xs text-muted-foreground'>
+              {row.original.description}
+            </span>
+          )}
         </div>
       )
     },
+  },
+  {
+    accessorKey: 'assignee',
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='来源' />
+    ),
+    cell: ({ row }) => (
+      <div className='max-w-40 truncate text-sm text-muted-foreground'>
+        {row.original.assignee || '-'}
+      </div>
+    ),
   },
   {
     accessorKey: 'status',
