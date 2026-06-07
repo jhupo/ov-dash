@@ -365,9 +365,10 @@ function ServerTerminalDialog({
   server: ServerConnection | null
   onOpenChange: (open: boolean) => void
 }) {
-  const [status, setStatus] = useState<'idle' | 'connecting' | 'open' | 'closed'>(
-    'idle'
-  )
+  const [status, setStatus] = useState<
+    'idle' | 'connecting' | 'open' | 'active' | 'closed' | 'error'
+  >('idle')
+  const [statusMessage, setStatusMessage] = useState('')
   const socketRef = useRef<WebSocket | null>(null)
   const terminalElementRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<XTerminal | null>(null)
@@ -378,6 +379,8 @@ function ServerTerminalDialog({
     const element = terminalElementRef.current
     if (!element) return
 
+    let disposed = false
+    let failed = false
     element.textContent = ''
     const terminal = new XTerminal({
       allowProposedApi: false,
@@ -407,17 +410,21 @@ function ServerTerminalDialog({
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
     terminal.open(element)
-    terminal.write('正在连接 SSH...\r\n')
+    terminal.writeln(`正在连接 ${server.connection_hint} ...`)
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
-    window.setTimeout(() => {
-      fitTerminal()
-      terminal.focus()
-    }, 0)
+    setStatus('connecting')
+    setStatusMessage('正在建立 WebSSH 连接')
+    const fitTimers = [0, 80, 180].map((delay) =>
+      window.setTimeout(() => {
+        fitTerminal()
+        terminal.refresh(0, terminal.rows - 1)
+        terminal.focus()
+      }, delay)
+    )
 
     const socket = new WebSocket(buildWebSSHUrl(server.id))
     socketRef.current = socket
-    setStatus('connecting')
 
     const dataDisposable = terminal.onData((data) => {
       if (socket.readyState === WebSocket.OPEN) {
@@ -432,36 +439,59 @@ function ServerTerminalDialog({
 
     socket.onopen = () => {
       setStatus('open')
-      terminal.clear()
+      setStatusMessage('已连接，正在等待远端 Shell 输出')
+      terminal.writeln('WebSSH 已连接，正在等待远端 Shell 输出...')
       fitTerminal()
       sendTerminalResize(socket, terminal.cols, terminal.rows)
       window.setTimeout(() => terminal.focus(), 0)
     }
     socket.onmessage = (event) => {
       const message = String(event.data)
+      if (!message) return
+      setStatus('active')
+      setStatusMessage('已连接')
       terminal.write(message)
       if (
         message.includes('连接失败') ||
+        message.includes('connect failed') ||
         message.includes('打开输入失败') ||
+        message.includes('open stdin failed') ||
         message.includes('打开输出失败') ||
+        message.includes('open stdout failed') ||
         message.includes('打开错误输出失败') ||
-        message.includes('启动 Shell 失败')
+        message.includes('open stderr failed') ||
+        message.includes('启动 Shell 失败') ||
+        message.includes('start shell failed')
       ) {
+        failed = true
+        setStatus('error')
+        setStatusMessage(message.trim())
         toast.error(message.trim())
       }
     }
     socket.onerror = () => {
       const message =
         'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
+      failed = true
+      setStatus('error')
+      setStatusMessage(message)
       terminal.writeln('')
       terminal.writeln(message)
       toast.error(message)
     }
-    socket.onclose = () => {
-      setStatus('closed')
+    socket.onclose = (event) => {
+      if (disposed) return
+      if (!failed) {
+        setStatus('closed')
+        setStatusMessage(
+          event.wasClean ? '连接已关闭' : `连接已断开 (${event.code})`
+        )
+      }
     }
 
     return () => {
+      disposed = true
+      fitTimers.forEach((timer) => window.clearTimeout(timer))
       resizeObserver.disconnect()
       resizeDisposable.dispose()
       dataDisposable.dispose()
@@ -497,11 +527,16 @@ function ServerTerminalDialog({
           </DialogTitle>
         </DialogHeader>
         <div className='px-5 pb-5'>
+          {statusMessage && (
+            <div className='mb-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground'>
+              {statusMessage}
+            </div>
+          )}
           <div
             ref={terminalElementRef}
             aria-label='SSH 终端'
             onClick={focusTerminal}
-            className='h-[min(68vh,640px)] overflow-hidden rounded-md border bg-[#050816] p-2 shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_.xterm]:h-full [&_.xterm-viewport]:bg-transparent! [&_.xterm-screen]:focus:outline-none'
+            className='h-[min(68vh,640px)] min-h-[420px] overflow-hidden rounded-md border bg-[#050816] p-2 text-[#d8f3ff] shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_.xterm]:h-full [&_.xterm-helpers]:opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:bg-transparent!'
           />
         </div>
       </DialogContent>
@@ -801,10 +836,12 @@ function TextField({
 }
 
 function getTerminalStatusText(
-  status: 'idle' | 'connecting' | 'open' | 'closed'
+  status: 'idle' | 'connecting' | 'open' | 'active' | 'closed' | 'error'
 ) {
   if (status === 'connecting') return '连接中'
-  if (status === 'open') return '已连接'
+  if (status === 'open') return '等待输出'
+  if (status === 'active') return '已连接'
+  if (status === 'error') return '连接异常'
   if (status === 'closed') return '已断开'
   return ''
 }
