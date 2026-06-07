@@ -515,7 +515,7 @@ function buildWebSSHUrl(id: string) {
 function applyTerminalOutput(current: string, raw: string) {
   let next = hasClearSequence(raw) ? '' : current
   let text = stripTerminalControl(raw)
-  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '')
 
   for (const char of text) {
     if (char === '\b' || char === '\u007f') {
