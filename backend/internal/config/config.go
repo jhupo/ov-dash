@@ -15,12 +15,14 @@ type Config struct {
 	Redis      RedisConfig
 	Worker     WorkerConfig
 	Python     PythonConfig
+	Update     UpdateConfig
 	Migrations MigrationsConfig
 }
 
 type AppConfig struct {
 	Name            string
 	Env             string
+	Version         string
 	ShutdownTimeout time.Duration
 }
 
@@ -62,6 +64,17 @@ type PythonConfig struct {
 	ScriptsDir string
 }
 
+type UpdateConfig struct {
+	WorkDir                 string
+	Remote                  string
+	Image                   string
+	BackendImageRepository  string
+	FrontendImageRepository string
+	FallbackBuild           bool
+	Project                 string
+	Enabled                 bool
+}
+
 type MigrationsConfig struct {
 	Dir string
 }
@@ -71,6 +84,7 @@ func Load() Config {
 		App: AppConfig{
 			Name:            env("APP_NAME", "ov-dash"),
 			Env:             env("APP_ENV", "local"),
+			Version:         env("APP_VERSION", "local"),
 			ShutdownTimeout: durationEnv("APP_SHUTDOWN_TIMEOUT", 15*time.Second),
 		},
 		HTTP: HTTPConfig{
@@ -102,9 +116,34 @@ func Load() Config {
 			Bin:        env("PYTHON_BIN", "python3"),
 			ScriptsDir: env("PYTHON_SCRIPTS_DIR", "./scripts"),
 		},
+		Update: UpdateConfig{
+			WorkDir:                 env("UPDATE_WORKDIR", "/opt/ov-dash"),
+			Remote:                  env("UPDATE_REMOTE", "origin"),
+			Image:                   env("UPDATE_IMAGE", "ov-dash-backend:local"),
+			BackendImageRepository:  env("UPDATE_BACKEND_IMAGE_REPOSITORY", "ghcr.io/jhupo/ov-dash-backend"),
+			FrontendImageRepository: env("UPDATE_FRONTEND_IMAGE_REPOSITORY", "ghcr.io/jhupo/ov-dash-frontend"),
+			FallbackBuild:           boolEnv("UPDATE_FALLBACK_BUILD", false),
+			Project:                 env("UPDATE_PROJECT", "ov-dash"),
+			Enabled:                 boolEnv("UPDATE_ENABLED", true),
+		},
 		Migrations: MigrationsConfig{
 			Dir: env("MIGRATIONS_DIR", "/migrations"),
 		},
+	}
+}
+
+func boolEnv(key string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
 	}
 }
 

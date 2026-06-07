@@ -7,23 +7,20 @@ import (
 	"ov-dash/backend/internal/modules/auth"
 )
 
-type authContextKey struct{}
-
 func authMiddleware(service *auth.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user, err := service.CurrentUser(r.Context(), tokenFromRequest(r))
+			user, err := service.CurrentUser(r.Context(), auth.TokenFromRequest(r))
 			if err != nil {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 				return
 			}
-			ctx := context.WithValue(r.Context(), authContextKey{}, user)
+			ctx := auth.ContextWithUser(r.Context(), user)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
 func UserFromContext(ctx context.Context) (auth.User, bool) {
-	user, ok := ctx.Value(authContextKey{}).(auth.User)
-	return user, ok
+	return auth.UserFromContext(ctx)
 }

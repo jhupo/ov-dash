@@ -1,5 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
+import { FitAddon } from '@xterm/addon-fit'
+import { Terminal as XTerminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -17,11 +25,12 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 import {
   deleteServerConnection,
   listServerConnections,
+  requestServerShellTicket,
   saveServerConnection,
   touchServerMonitor,
   updateServerAgent,
@@ -40,6 +49,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   Form,
   FormControl,
   FormField,
@@ -48,13 +64,6 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import {
   Select,
   SelectContent,
@@ -70,7 +79,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Textarea } from '@/components/ui/textarea'
+
+const savedPrivateKeyLabel = '已保存私钥'
 
 const formSchema = z.object({
   name: z.string().trim().min(1, '请输入名称。'),
@@ -229,7 +239,9 @@ export function ServerConnectionSettings() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align='end' className='w-36'>
-                        <DropdownMenuItem onClick={() => setTerminalServer(item)}>
+                        <DropdownMenuItem
+                          onClick={() => setTerminalServer(item)}
+                        >
                           <Terminal />
                           连接
                         </DropdownMenuItem>
@@ -360,113 +372,227 @@ function ServerTerminalDialog({
   server: ServerConnection | null
   onOpenChange: (open: boolean) => void
 }) {
-  const [input, setInput] = useState('')
-  const [output, setOutput] = useState('')
-  const [status, setStatus] = useState<'idle' | 'connecting' | 'open' | 'closed'>(
-    'idle'
-  )
+  const [status, setStatus] = useState<
+    'idle' | 'connecting' | 'open' | 'active' | 'closed' | 'error'
+  >('idle')
+  const [statusMessage, setStatusMessage] = useState('')
   const socketRef = useRef<WebSocket | null>(null)
-  const outputRef = useRef<HTMLTextAreaElement | null>(null)
+  const terminalElementRef = useRef<HTMLDivElement | null>(null)
+  const [terminalMountKey, setTerminalMountKey] = useState(0)
+  const terminalRef = useRef<XTerminal | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
+  const handleTerminalElement = useCallback((element: HTMLDivElement | null) => {
+    terminalElementRef.current = element
+    if (element) {
+      setTerminalMountKey((value) => value + 1)
+    }
+  }, [])
 
   useEffect(() => {
     if (!server) return
-    const socket = new WebSocket(buildWebSSHUrl(server.id))
-    socketRef.current = socket
-    setInput('')
-    setOutput('')
-    setStatus('connecting')
+    const activeServer = server
+    const element = terminalElementRef.current
+    if (!element) return
 
-    socket.onopen = () => {
-      setStatus('open')
-    }
-    socket.onmessage = (event) => {
-      setOutput((current) => current + String(event.data))
-    }
-    socket.onerror = () => {
-      setOutput((current) => current + '\r\n连接异常。\r\n')
-    }
-    socket.onclose = () => {
-      setStatus('closed')
+    let disposed = false
+    let failed = false
+    element.textContent = ''
+    const terminal = new XTerminal({
+      allowProposedApi: false,
+      convertEol: false,
+      cursorBlink: true,
+      fontFamily:
+        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 13,
+      lineHeight: 1.45,
+      rows: 32,
+      scrollback: 5000,
+      theme: {
+        background: '#050816',
+        foreground: '#d8f3ff',
+        cursor: '#f8fafc',
+        selectionBackground: '#334155',
+        black: '#0f172a',
+        blue: '#38bdf8',
+        cyan: '#22d3ee',
+        green: '#34d399',
+        magenta: '#c084fc',
+        red: '#fb7185',
+        white: '#e5e7eb',
+        yellow: '#fbbf24',
+      },
+    })
+    const fitAddon = new FitAddon()
+    terminal.loadAddon(fitAddon)
+    terminal.open(element)
+    terminal.writeln(`正在连接 ${activeServer.connection_hint} ...`)
+    terminalRef.current = terminal
+    fitAddonRef.current = fitAddon
+    const statusTimer = window.setTimeout(() => {
+      if (disposed) return
+      setStatus('connecting')
+      setStatusMessage('正在建立 WebSSH 连接')
+    }, 0)
+    const fitTimers = [0, 80, 180].map((delay) =>
+      window.setTimeout(() => {
+        fitTerminal()
+        terminal.refresh(0, terminal.rows - 1)
+        terminal.focus()
+      }, delay)
+    )
+
+    const dataDisposable = terminal.onData((data) => {
+      const socket = socketRef.current
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(data)
+      }
+    })
+    const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      const socket = socketRef.current
+      if (socket) sendTerminalResize(socket, cols, rows)
+    })
+    const resizeObserver = new ResizeObserver(() => fitTerminal())
+    resizeObserver.observe(element)
+
+    void connect()
+
+    async function connect() {
+      try {
+        const { ticket } = await requestServerShellTicket(activeServer.id)
+        if (disposed) return
+        const socket = new WebSocket(buildWebSSHUrl(activeServer.id, ticket))
+        socketRef.current = socket
+
+        socket.onopen = () => {
+          setStatus('open')
+          setStatusMessage('已连接，正在等待远端 Shell 输出')
+          terminal.writeln('WebSSH 已连接，正在等待远端 Shell 输出...')
+          fitTerminal()
+          sendTerminalResize(socket, terminal.cols, terminal.rows)
+          window.setTimeout(() => terminal.focus(), 0)
+        }
+        socket.onmessage = (event) => {
+          const message = String(event.data)
+          if (!message) return
+          setStatus('active')
+          setStatusMessage('已连接')
+          terminal.write(message)
+          if (
+            message.includes('连接失败') ||
+            message.includes('connect failed') ||
+            message.includes('打开输入失败') ||
+            message.includes('open stdin failed') ||
+            message.includes('打开输出失败') ||
+            message.includes('open stdout failed') ||
+            message.includes('打开错误输出失败') ||
+            message.includes('open stderr failed') ||
+            message.includes('启动 Shell 失败') ||
+            message.includes('start shell failed')
+          ) {
+            failed = true
+            setStatus('error')
+            setStatusMessage(message.trim())
+            toast.error(message.trim())
+          }
+        }
+        socket.onerror = () => {
+          const message =
+            'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
+          failed = true
+          setStatus('error')
+          setStatusMessage(message)
+          terminal.writeln('')
+          terminal.writeln(message)
+          toast.error(message)
+        }
+        socket.onclose = (event) => {
+          if (disposed) return
+          if (!failed) {
+            setStatus('closed')
+            setStatusMessage(
+              event.wasClean ? '连接已关闭' : `连接已断开 (${event.code})`
+            )
+          }
+        }
+      } catch {
+        if (disposed) return
+        const message = 'WebSSH 授权失败，请重新登录后再试。'
+        failed = true
+        setStatus('error')
+        setStatusMessage(message)
+        terminal.writeln('')
+        terminal.writeln(message)
+        toast.error(message)
+      }
     }
 
     return () => {
-      socket.close()
+      disposed = true
+      window.clearTimeout(statusTimer)
+      fitTimers.forEach((timer) => window.clearTimeout(timer))
+      resizeObserver.disconnect()
+      resizeDisposable.dispose()
+      dataDisposable.dispose()
+      socketRef.current?.close()
       socketRef.current = null
+      fitAddonRef.current = null
+      terminalRef.current = null
+      terminal.dispose()
     }
-  }, [server])
 
-  useEffect(() => {
-    const element = outputRef.current
-    if (element) {
-      element.scrollTop = element.scrollHeight
+    function fitTerminal() {
+      try {
+        fitAddon.fit()
+      } catch {
+        // xterm cannot measure hidden containers during dialog transitions.
+      }
     }
-  }, [output])
+  }, [server, terminalMountKey])
 
-  function sendInput() {
-    const socket = socketRef.current
-    if (!input || !socket || socket.readyState !== WebSocket.OPEN) return
-    socket.send(input + '\n')
-    setInput('')
+  function focusTerminal() {
+    terminalRef.current?.focus()
   }
 
   return (
     <Dialog open={!!server} onOpenChange={onOpenChange}>
-      <DialogContent className='max-h-[92vh] overflow-y-auto sm:max-w-4xl'>
+      <DialogContent className='max-h-[92vh] overflow-y-auto p-0 sm:max-w-5xl'>
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className='px-5 pt-5'>
             SSH - {server?.connection_hint}
             <span className='ml-3 text-xs font-normal text-muted-foreground'>
-              {status === 'connecting'
-                ? '连接中'
-                : status === 'open'
-                  ? '已连接'
-                  : status === 'closed'
-                    ? '已断开'
-                    : ''}
+              {getTerminalStatusText(status)}
             </span>
           </DialogTitle>
         </DialogHeader>
-        <div className='space-y-3'>
-          <Textarea
-            ref={outputRef}
-            readOnly
-            value={output || '正在连接 SSH...'}
-            className='min-h-[420px] resize-none bg-black font-mono text-xs text-green-100'
+        <div className='px-5 pb-5'>
+          {statusMessage && (
+            <div className='mb-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground'>
+              {statusMessage}
+            </div>
+          )}
+          <div
+            ref={handleTerminalElement}
+            aria-label='SSH 终端'
+            onClick={focusTerminal}
+            className='h-[min(68vh,640px)] min-h-[420px] overflow-hidden rounded-md border bg-[#050816] p-2 text-[#d8f3ff] shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_.xterm]:h-full [&_.xterm-helpers]:opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:bg-transparent!'
           />
-          <div className='flex gap-2'>
-            <Input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  sendInput()
-                }
-              }}
-              className='font-mono'
-              placeholder='输入命令，回车发送'
-            />
-            <Button
-              type='button'
-              disabled={status !== 'open'}
-              onClick={sendInput}
-            >
-              <Terminal />
-              发送
-            </Button>
-          </div>
         </div>
       </DialogContent>
     </Dialog>
   )
 }
 
-function buildWebSSHUrl(id: string) {
+function buildWebSSHUrl(id: string, ticket: string) {
   const base = new URL(apiConfig.baseURL, window.location.origin)
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
   base.pathname = `${base.pathname.replace(/\/$/, '')}/server-connections/${id}/ssh/ws`
-  base.search = ''
+  base.searchParams.set('ticket', ticket)
   return base.toString()
+}
+
+function sendTerminalResize(socket: WebSocket, cols: number, rows: number) {
+  if (socket.readyState !== WebSocket.OPEN) return
+  socket.send(`\u001b]ovdash-resize;${cols};${rows}\u0007`)
 }
 
 function ServerConnectionDialog({
@@ -487,8 +613,8 @@ function ServerConnectionDialog({
     resolver: zodResolver(formSchema),
     defaultValues,
   })
-  const authType = form.watch('auth_type')
-  const keyFileName = form.watch('key_file_name')
+  const authType = useWatch({ control: form.control, name: 'auth_type' })
+  const keyFileName = useWatch({ control: form.control, name: 'key_file_name' })
 
   useEffect(() => {
     if (!open) return
@@ -503,7 +629,7 @@ function ServerConnectionDialog({
             auth_type: item.auth_type,
             password: '',
             private_key: '',
-            key_file_name: item.has_private_key ? '已保存私钥' : '',
+            key_file_name: item.has_private_key ? savedPrivateKeyLabel : '',
             expires_at: item.expires_at ? item.expires_at.slice(0, 10) : '',
             clear_secret: false,
           }
@@ -587,7 +713,9 @@ function ServerConnectionDialog({
                       <FormLabel>登录方式</FormLabel>
                       <Select
                         value={field.value}
-                        onValueChange={(value) => field.onChange(value)}
+                        onValueChange={(value) =>
+                          field.onChange(value as ServerAuthType)
+                        }
                       >
                         <FormControl>
                           <SelectTrigger className='w-full'>
@@ -639,7 +767,8 @@ function ServerConnectionDialog({
                             <div className='flex min-w-0 items-center gap-2 text-sm text-muted-foreground'>
                               <FileKey2 className='size-4 shrink-0' />
                               <span className='truncate'>
-                                {keyFileName && keyFileName !== '已保存私钥'
+                                {keyFileName &&
+                                keyFileName !== savedPrivateKeyLabel
                                   ? keyFileName
                                   : '未选择新文件'}
                               </span>
@@ -742,6 +871,17 @@ function TextField({
       )}
     />
   )
+}
+
+function getTerminalStatusText(
+  status: 'idle' | 'connecting' | 'open' | 'active' | 'closed' | 'error'
+) {
+  if (status === 'connecting') return '连接中'
+  if (status === 'open') return '等待输出'
+  if (status === 'active') return '已连接'
+  if (status === 'error') return '连接异常'
+  if (status === 'closed') return '已断开'
+  return ''
 }
 
 function formatDate(value: string | null) {

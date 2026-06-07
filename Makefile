@@ -1,10 +1,11 @@
 COMPOSE ?= docker compose
 ENV_FILE ?= .env
 PROJECT ?= ov-dash
+BUILD_COMPOSE ?= $(COMPOSE) -f docker-compose.yml -f docker-compose.build.yml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help env backend-tidy backend-test backend-api backend-worker frontend-install frontend-dev frontend-build compose-config compose-build compose-up compose-up-backend compose-down compose-restart compose-logs compose-ps api-logs worker-logs db-logs redis-logs db-shell redis-cli backup-db restore-db clean
+.PHONY: help env backend-tidy backend-test backend-api backend-worker frontend-install frontend-dev frontend-build compose-config compose-build compose-pull compose-up compose-up-build compose-up-backend compose-down compose-restart compose-logs compose-ps api-logs worker-logs db-logs redis-logs db-shell redis-cli backup-db restore-db clean
 
 help:
 	@printf '%s\n' \
@@ -13,8 +14,10 @@ help:
 		'  make backend-test        Run Go backend tests' \
 		'  make frontend-build      Build shadcn-admin frontend locally' \
 		'  make compose-config      Validate Docker Compose configuration' \
-		'  make compose-build       Build all service images' \
-		'  make compose-up          Start full stack' \
+		'  make compose-build       Build local service images with docker-compose.build.yml' \
+		'  make compose-pull        Pull release images' \
+		'  make compose-up          Start full stack from release images' \
+		'  make compose-up-build    Build locally and start full stack' \
 		'  make compose-up-backend  Start PostgreSQL, Redis, API, and worker only' \
 		'  make compose-logs        Follow all service logs' \
 		'  make backup-db           Dump PostgreSQL into deploy/backups/' \
@@ -48,13 +51,19 @@ compose-config:
 	$(COMPOSE) --env-file $(ENV_FILE) config
 
 compose-build:
-	$(COMPOSE) --env-file $(ENV_FILE) build
+	$(BUILD_COMPOSE) --env-file $(ENV_FILE) build
+
+compose-pull:
+	$(COMPOSE) --env-file $(ENV_FILE) pull
 
 compose-up:
-	$(COMPOSE) --env-file $(ENV_FILE) up -d --build
+	$(COMPOSE) --env-file $(ENV_FILE) up -d --no-build
+
+compose-up-build:
+	$(BUILD_COMPOSE) --env-file $(ENV_FILE) up -d --build
 
 compose-up-backend:
-	$(COMPOSE) --env-file $(ENV_FILE) up -d --build postgres redis api worker
+	$(COMPOSE) --env-file $(ENV_FILE) up -d --no-build postgres redis api worker
 
 compose-down:
 	$(COMPOSE) --env-file $(ENV_FILE) down

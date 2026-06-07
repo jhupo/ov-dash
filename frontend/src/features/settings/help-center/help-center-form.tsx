@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -11,10 +11,6 @@ import {
 
 export function HelpCenterForm() {
   const [markdown, setMarkdown] = useState(readHelpDocument)
-
-  useEffect(() => {
-    setMarkdown(readHelpDocument())
-  }, [])
 
   const handleSave = () => {
     saveHelpDocument(markdown)

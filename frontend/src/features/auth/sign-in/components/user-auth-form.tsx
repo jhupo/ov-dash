@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import axios from 'axios'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -44,7 +45,7 @@ export function UserAuthForm({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      email: 'classicriver@jhupo.com',
+      email: '',
       password: '',
     },
   })
@@ -58,8 +59,8 @@ export function UserAuthForm({
       auth.setAccessToken(session.token)
       toast.success('登录成功')
       window.location.assign(redirectTo || '/')
-    } catch {
-      toast.error('登录失败，请检查邮箱和密码')
+    } catch (error) {
+      toast.error(loginErrorMessage(error))
     } finally {
       setIsLoading(false)
     }
@@ -69,7 +70,7 @@ export function UserAuthForm({
     <Form {...form}>
       <form
         onSubmit={form.handleSubmit(onSubmit)}
-        className={cn('grid gap-3', className)}
+        className={cn('grid gap-5', className)}
         {...props}
       >
         <FormField
@@ -79,7 +80,12 @@ export function UserAuthForm({
             <FormItem>
               <FormLabel>邮箱</FormLabel>
               <FormControl>
-                <Input placeholder='classicriver@jhupo.com' {...field} />
+                <Input
+                  className='h-11'
+                  placeholder='请输入邮箱'
+                  autoComplete='email'
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -92,17 +98,35 @@ export function UserAuthForm({
             <FormItem>
               <FormLabel>密码</FormLabel>
               <FormControl>
-                <PasswordInput placeholder='请输入密码' {...field} />
+                <PasswordInput
+                  className='h-11'
+                  placeholder='请输入密码'
+                  autoComplete='current-password'
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
           )}
         />
-        <Button className='mt-2' disabled={isLoading}>
+        <Button className='mt-1 h-11' disabled={isLoading}>
           {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
           登录
         </Button>
       </form>
     </Form>
   )
+}
+
+function loginErrorMessage(error: unknown) {
+  if (!axios.isAxiosError(error)) {
+    return '登录失败，请稍后重试'
+  }
+  if (error.response?.status === 401) {
+    return '登录失败，请检查邮箱和密码'
+  }
+  if (!error.response) {
+    return '无法连接登录服务'
+  }
+  return '登录服务异常，请稍后重试'
 }

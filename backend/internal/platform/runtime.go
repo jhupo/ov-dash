@@ -35,7 +35,7 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 
-	queueClient, err := queue.Open(ctx, cfg.Redis)
+	queueClient, err := queue.Open(ctx, cfg.Redis, queue.WithAudit(queue.NewPostgresAuditStore(pg)))
 	if err != nil {
 		pg.Close()
 		_ = logger.Sync()

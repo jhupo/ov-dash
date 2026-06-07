@@ -1,0 +1,39 @@
+name: ov-dash
+
+x-backend-build: &backend-build
+  context: .
+  dockerfile: deploy/docker/backend.Dockerfile
+  args:
+    GO_VERSION: ${GO_VERSION:-1.23}
+    GO_IMAGE: ${GO_IMAGE:-golang:1.23-alpine}
+    RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.20}
+    APK_REPOSITORY: ${APK_REPOSITORY:-https://mirrors.aliyun.com/alpine}
+    GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    GOSUMDB: ${GOSUMDB:-sum.golang.google.cn}
+    APP_VERSION: ${APP_VERSION:-local}
+    HTTP_PROXY: ${HTTP_PROXY:-}
+    HTTPS_PROXY: ${HTTPS_PROXY:-}
+    ALL_PROXY: ${ALL_PROXY:-}
+    NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres,redis,api,worker,frontend}
+
+services:
+  api:
+    image: ${BACKEND_IMAGE:-ov-dash-backend:local}
+    build: *backend-build
+
+  worker:
+    image: ${BACKEND_IMAGE:-ov-dash-backend:local}
+    build: *backend-build
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-ov-dash-frontend:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/frontend.Dockerfile
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22}
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.27-alpine}
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+        VITE_ENABLE_DEVTOOLS: ${VITE_ENABLE_DEVTOOLS:-false}

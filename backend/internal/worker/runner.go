@@ -86,14 +86,21 @@ func (r *Runner) loop(ctx context.Context, workerID int) {
 		if job == nil {
 			continue
 		}
+		job.Attempts++
 
 		handler, ok := r.handlers[job.Type]
 		if !ok {
 			logger.Warn("unknown job type", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
+			if err := r.runtime.Queue.MarkDead(ctx, r.runtime.Config.Worker.QueueName, *job, "unknown job type"); err != nil {
+				logger.Error("mark unknown job dead", zap.String("job_id", job.ID), zap.Error(err))
+			}
 			r.publishJobEvent(ctx, "job.unknown", *job, map[string]any{"worker_id": workerID})
 			continue
 		}
 
+		if err := r.runtime.Queue.MarkRunning(ctx, r.runtime.Config.Worker.QueueName, *job); err != nil {
+			logger.Error("mark job running", zap.String("job_id", job.ID), zap.Error(err))
+		}
 		r.publishJobEvent(ctx, "job.started", *job, map[string]any{"worker_id": workerID})
 
 		jobCtx, cancel := r.jobContext(ctx, job.Type)
@@ -101,14 +108,56 @@ func (r *Runner) loop(ctx context.Context, workerID int) {
 		cancel()
 
 		if err != nil {
-			logger.Error("job failed", zap.String("job_id", job.ID), zap.String("job_type", job.Type), zap.Error(err))
+			if job.Attempts < job.MaxAttempts {
+				retryAt := time.Now().UTC().Add(retryBackoff(job.Attempts))
+				logger.Warn(
+					"job failed, scheduling retry",
+					zap.String("job_id", job.ID),
+					zap.String("job_type", job.Type),
+					zap.Int("attempts", job.Attempts),
+					zap.Int("max_attempts", job.MaxAttempts),
+					zap.Time("retry_at", retryAt),
+					zap.Error(err),
+				)
+				if retryErr := r.runtime.Queue.ScheduleRetry(ctx, r.runtime.Config.Worker.QueueName, *job, retryAt, err.Error()); retryErr != nil {
+					logger.Error("schedule job retry", zap.String("job_id", job.ID), zap.Error(retryErr))
+					if markErr := r.runtime.Queue.MarkDead(ctx, r.runtime.Config.Worker.QueueName, *job, retryErr.Error()); markErr != nil {
+						logger.Error("mark retry scheduling failure dead", zap.String("job_id", job.ID), zap.Error(markErr))
+					}
+				}
+				r.publishJobEvent(ctx, "job.failed", *job, map[string]any{
+					"worker_id": workerID,
+					"error":     err.Error(),
+					"retry_at":  retryAt,
+				})
+				continue
+			}
+
+			logger.Error(
+				"job failed permanently",
+				zap.String("job_id", job.ID),
+				zap.String("job_type", job.Type),
+				zap.Int("attempts", job.Attempts),
+				zap.Int("max_attempts", job.MaxAttempts),
+				zap.Error(err),
+			)
+			if markErr := r.runtime.Queue.MarkDead(ctx, r.runtime.Config.Worker.QueueName, *job, err.Error()); markErr != nil {
+				logger.Error("mark job dead", zap.String("job_id", job.ID), zap.Error(markErr))
+			}
 			r.publishJobEvent(ctx, "job.failed", *job, map[string]any{
+				"worker_id": workerID,
+				"error":     err.Error(),
+			})
+			r.publishJobEvent(ctx, "job.dead", *job, map[string]any{
 				"worker_id": workerID,
 				"error":     err.Error(),
 			})
 			continue
 		}
 
+		if err := r.runtime.Queue.MarkCompleted(ctx, r.runtime.Config.Worker.QueueName, *job); err != nil {
+			logger.Error("mark job completed", zap.String("job_id", job.ID), zap.Error(err))
+		}
 		logger.Info("job completed", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
 		r.publishJobEvent(ctx, "job.completed", *job, map[string]any{"worker_id": workerID})
 	}
@@ -125,6 +174,21 @@ func (r *Runner) jobContext(ctx context.Context, jobType string) (context.Contex
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, r.runtime.Config.Worker.JobTimeout)
+}
+
+func retryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+
+	delay := 5 * time.Second
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay >= time.Minute {
+			return time.Minute
+		}
+	}
+	return delay
 }
 
 func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {

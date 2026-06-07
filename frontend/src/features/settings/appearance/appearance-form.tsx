@@ -183,9 +183,7 @@ export function AppearanceForm() {
           render={({ field }) => (
             <FormItem>
               <FormLabel>主题</FormLabel>
-              <FormDescription>
-                选择仪表盘主题。
-              </FormDescription>
+              <FormDescription>选择仪表盘主题。</FormDescription>
               <FormMessage />
               <RadioGroup
                 onValueChange={field.onChange}
