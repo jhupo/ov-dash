@@ -91,35 +91,58 @@ export function UpdateSwitch() {
           <span className='sr-only'>在线更新</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align='end' className='w-[264px] overflow-hidden p-0'>
-        <div className='px-3 py-2.5'>
-          <div className='grid grid-cols-[auto_minmax(0,1fr)_1.75rem] items-center gap-2'>
-            <span className='text-xs text-muted-foreground'>当前版本</span>
-            <span className='min-w-0 truncate text-right font-mono text-sm font-semibold tracking-normal'>
-              {versionText(value)}
-            </span>
-            <Button
-              type='button'
-              size='icon'
-              variant='ghost'
-              className='size-7 rounded-md'
-              disabled={busy}
-              onClick={() => checkMutation.mutate()}
-              aria-label='刷新版本'
-            >
-              <RefreshCw className={busy ? 'animate-spin' : undefined} />
-            </Button>
+      <DropdownMenuContent align='end' className='w-[312px] overflow-hidden p-2'>
+        <div className='space-y-2'>
+          <div className='rounded-lg border bg-muted/20 p-3'>
+            <div className='flex items-start gap-3'>
+              <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary'>
+                <CloudUpload className='size-4' />
+              </div>
+              <div className='min-w-0 flex-1 space-y-1.5'>
+                <div className='flex min-w-0 items-center gap-2'>
+                  <span className='shrink-0 text-xs text-muted-foreground'>
+                    当前版本
+                  </span>
+                  <span className='size-1 shrink-0 rounded-full bg-border' />
+                  <span className='min-w-0 truncate font-mono text-sm font-semibold tracking-normal'>
+                    {versionText(value)}
+                  </span>
+                </div>
+                <div className='flex items-center gap-1.5 text-[11px] text-muted-foreground'>
+                  <span className='size-1.5 rounded-full bg-emerald-500' />
+                  <span>{value?.checkedAt ? '已检查' : '未检查'}</span>
+                  {value?.checkedAt && (
+                    <span className='font-mono'>
+                      {formatDateTime(value.checkedAt)}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <Button
+                type='button'
+                size='icon'
+                variant='ghost'
+                className='size-8 shrink-0 rounded-md border bg-background/70 hover:bg-accent'
+                disabled={busy}
+                onClick={() => checkMutation.mutate()}
+                aria-label='刷新版本'
+              >
+                <RefreshCw
+                  className={busy ? 'size-4 animate-spin' : 'size-4'}
+                />
+              </Button>
+            </div>
           </div>
 
-          {showUpdatePanel ? (
-            <div className='-mx-3 mt-2.5 space-y-2.5 border-t px-3 pt-2.5'>
+          {showUpdatePanel && (
+            <div className='space-y-2.5 rounded-lg border bg-background p-3'>
               {value?.hasUpdate && (
-                <div className='grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2'>
-                  <div className='grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-md bg-muted/30 px-2.5 py-2'>
-                    <span className='text-xs text-muted-foreground'>更新版本</span>
-                    <span className='truncate text-right font-mono text-sm font-semibold'>
+                <div className='flex items-center gap-2'>
+                  <div className='min-w-0 flex-1'>
+                    <div className='text-xs text-muted-foreground'>更新版本</div>
+                    <div className='truncate font-mono text-sm font-semibold'>
                       {value.latestVersion}
-                    </span>
+                    </div>
                   </div>
                   {!isActiveUpdate(update) && update?.status !== 'ready' && (
                     <Button
@@ -148,13 +171,6 @@ export function UpdateSwitch() {
                   <RotateCw />
                   立即重启
                 </Button>
-              )}
-            </div>
-          ) : (
-            <div className='mt-1 flex items-center justify-end gap-1.5 text-[11px] text-muted-foreground/70'>
-              <span>{value?.checkedAt ? '已检查' : '未检查'}</span>
-              {value?.checkedAt && (
-                <span>{formatDateTime(value.checkedAt)}</span>
               )}
             </div>
           )}
