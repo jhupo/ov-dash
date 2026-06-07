@@ -18,6 +18,13 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE wiki_pages
+    ADD COLUMN IF NOT EXISTS link_label TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS link_url TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS machine_host TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS machine_port TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS machine_username TEXT NOT NULL DEFAULT '';
+
 CREATE INDEX IF NOT EXISTS idx_wiki_pages_category_updated_at
     ON wiki_pages (category, updated_at DESC);
 
@@ -43,6 +50,13 @@ CREATE TABLE IF NOT EXISTS wiki_page_revisions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (page_id, version)
 );
+
+ALTER TABLE wiki_page_revisions
+    ADD COLUMN IF NOT EXISTS link_label TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS link_url TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS machine_host TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS machine_port TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS machine_username TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS idx_wiki_page_revisions_page_version
     ON wiki_page_revisions (page_id, version DESC);
