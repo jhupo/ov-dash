@@ -9,6 +9,7 @@ import (
 
 	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/modules/notifications"
+	"ov-dash/backend/internal/modules/wiki"
 	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/internal/platform/capability"
 	platformmodule "ov-dash/backend/internal/platform/module"
@@ -41,6 +42,10 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 				notifications.NewProxiedTelegramClient(runtime.Proxy),
 			),
 		)
+		wikiPages := NewWikiHandler(
+			wiki.NewService(wiki.NewRepository(runtime.DB)),
+			runtime.Config.Uploads.WikiDir,
+		)
 		policy := capability.DefaultRolePolicy()
 		requireCapability := func(value capability.Capability) func(http.Handler) http.Handler {
 			return capability.RequireCapability(policy, currentCapabilityUser, value)
@@ -48,10 +53,19 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 
 		r.Get("/health", health.Readiness)
 		r.Post("/incoming-messages", telegramNotifications.IncomingMessage)
+
 		protectedRouter.Get("/telegram-notifications/settings", telegramNotifications.GetSettings)
 		protectedRouter.Put("/telegram-notifications/settings", telegramNotifications.UpdateSettings)
 		protectedRouter.Get("/telegram-notifications/users", telegramNotifications.ListUserSettings)
 		protectedRouter.Put("/telegram-notifications/users/{userID}", telegramNotifications.UpdateUserSettings)
+		protectedRouter.Get("/wiki/pages", wikiPages.ListPages)
+		protectedRouter.Post("/wiki/pages", wikiPages.CreatePage)
+		protectedRouter.Get("/wiki/pages/{id}", wikiPages.GetPage)
+		protectedRouter.Put("/wiki/pages/{id}", wikiPages.UpdatePage)
+		protectedRouter.Delete("/wiki/pages/{id}", wikiPages.DeletePage)
+		protectedRouter.Get("/wiki/pages/{id}/revisions", wikiPages.ListRevisions)
+		protectedRouter.Post("/wiki/attachments", wikiPages.UploadAttachment)
+		protectedRouter.Get("/wiki/attachments/{id}/raw", wikiPages.AttachmentRaw)
 
 		defaultRegistry().RegisterRoutes(platformmodule.Context{
 			Config:            runtime.Config,

@@ -1,5 +1,6 @@
 import {
   Bell,
+  BookOpen,
   CircleHelp,
   LayoutDashboard,
   ListTodo,
@@ -22,6 +23,7 @@ export type FrontendModuleId =
   | 'tasks'
   | 'apps'
   | 'users'
+  | 'wiki'
   | 'server-status'
   | 'settings'
   | 'settings-proxy'
@@ -109,6 +111,14 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     path: '/users',
     icon: Users,
     sidebar: { groupId: 'general', order: 40 },
+    command: { enabled: true },
+  },
+  {
+    id: 'wiki',
+    title: '资料库',
+    path: '/wiki',
+    icon: BookOpen,
+    sidebar: { groupId: 'general', order: 50 },
     command: { enabled: true },
   },
   {

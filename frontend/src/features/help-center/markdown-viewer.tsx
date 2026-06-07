@@ -15,6 +15,11 @@ type FlowNode = {
   label: string
 }
 
+type MarkdownTable = {
+  headers: string[]
+  rows: string[][]
+}
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -37,7 +42,10 @@ function inlineMarkdown(value: string) {
       '<a href="$2" target="_blank" rel="noreferrer" class="font-medium text-primary underline underline-offset-4">$1</a>'
     )
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code class="rounded bg-muted px-1 py-0.5">$1</code>')
+    .replace(
+      /`([^`]+)`/g,
+      '<code class="rounded bg-muted px-1 py-0.5">$1</code>'
+    )
 }
 
 function getFlowNode(raw: string): FlowNode {
@@ -72,6 +80,50 @@ function parseFlowchart(code: string) {
   return { nodes: [...nodes.values()], edges }
 }
 
+function splitTableCells(line: string) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+function isTableSeparator(cells: string[]) {
+  return (
+    cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))
+  )
+}
+
+function normalizeTableRow(cells: string[], length: number) {
+  return Array.from({ length }, (_, index) => cells[index] ?? '')
+}
+
+function parseMarkdownTable(block: string): MarkdownTable | null {
+  const lines = block
+    .trim()
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (lines.length < 2 || !lines[0].includes('|')) return null
+
+  const headers = splitTableCells(lines[0])
+  const separator = splitTableCells(lines[1])
+  if (headers.length < 2 || !isTableSeparator(separator)) return null
+
+  const rows: string[][] = []
+  for (const line of lines.slice(2)) {
+    if (!line.includes('|')) return null
+    rows.push(normalizeTableRow(splitTableCells(line), headers.length))
+  }
+
+  return {
+    headers,
+    rows,
+  }
+}
+
 function Flowchart({ code }: { code: string }) {
   const { nodes, edges } = parseFlowchart(code)
 
@@ -88,9 +140,7 @@ function Flowchart({ code }: { code: string }) {
       <div className='flex flex-wrap items-center gap-3'>
         {nodes.map((node, index) => (
           <Fragment key={node.id}>
-            {index > 0 && (
-              <span className='text-muted-foreground'>{'->'}</span>
-            )}
+            {index > 0 && <span className='text-muted-foreground'>{'->'}</span>}
             <div className='rounded-md border bg-background px-3 py-2 text-sm font-medium shadow-xs'>
               {node.label}
             </div>
@@ -137,6 +187,40 @@ function renderBlock(block: string, index: number) {
       >
         <code>{code}</code>
       </pre>
+    )
+  }
+
+  const table = parseMarkdownTable(trimmed)
+  if (table) {
+    return (
+      <div key={index} className='overflow-x-auto rounded-md border'>
+        <table className='w-full border-collapse text-left text-sm'>
+          <thead className='bg-muted/60'>
+            <tr>
+              {table.headers.map((header, headerIndex) => (
+                <th
+                  key={headerIndex}
+                  className='border-b px-3 py-2 font-medium'
+                  dangerouslySetInnerHTML={{ __html: inlineMarkdown(header) }}
+                />
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows.map((row, rowIndex) => (
+              <tr key={rowIndex} className='odd:bg-background even:bg-muted/20'>
+                {row.map((cell, cellIndex) => (
+                  <td
+                    key={cellIndex}
+                    className='border-b px-3 py-2 align-top last:border-b'
+                    dangerouslySetInnerHTML={{ __html: inlineMarkdown(cell) }}
+                  />
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     )
   }
 
