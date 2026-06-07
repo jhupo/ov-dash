@@ -91,38 +91,19 @@ export function UpdateSwitch() {
           <span className='sr-only'>在线更新</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align='end' className='w-[312px] overflow-hidden p-2'>
+
+      <DropdownMenuContent align='end' className='w-[288px] p-2'>
         <div className='space-y-2'>
-          <div className='rounded-lg border bg-muted/20 p-3'>
-            <div className='flex items-start gap-3'>
-              <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary'>
+          <section className='rounded-lg border bg-card p-3 shadow-sm'>
+            <div className='flex items-start justify-between gap-3'>
+              <div className='flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary'>
                 <CloudUpload className='size-4' />
-              </div>
-              <div className='min-w-0 flex-1 space-y-1.5'>
-                <div className='flex min-w-0 items-center gap-2'>
-                  <span className='shrink-0 text-xs text-muted-foreground'>
-                    当前版本
-                  </span>
-                  <span className='size-1 shrink-0 rounded-full bg-border' />
-                  <span className='min-w-0 truncate font-mono text-sm font-semibold tracking-normal'>
-                    {versionText(value)}
-                  </span>
-                </div>
-                <div className='flex items-center gap-1.5 text-[11px] text-muted-foreground'>
-                  <span className='size-1.5 rounded-full bg-emerald-500' />
-                  <span>{value?.checkedAt ? '已检查' : '未检查'}</span>
-                  {value?.checkedAt && (
-                    <span className='font-mono'>
-                      {formatDateTime(value.checkedAt)}
-                    </span>
-                  )}
-                </div>
               </div>
               <Button
                 type='button'
                 size='icon'
                 variant='ghost'
-                className='size-8 shrink-0 rounded-md border bg-background/70 hover:bg-accent'
+                className='size-8 shrink-0 rounded-md border bg-background hover:bg-accent'
                 disabled={busy}
                 onClick={() => checkMutation.mutate()}
                 aria-label='刷新版本'
@@ -132,28 +113,43 @@ export function UpdateSwitch() {
                 />
               </Button>
             </div>
-          </div>
+
+            <div className='mt-3 space-y-1'>
+              <div className='text-xs text-muted-foreground'>当前版本</div>
+              <div className='break-all font-mono text-base font-semibold leading-5'>
+                {versionText(value)}
+              </div>
+              <div className='flex items-center gap-1.5 text-xs text-muted-foreground'>
+                <span className='size-1.5 rounded-full bg-emerald-500' />
+                <span>{value?.checkedAt ? '已检查' : '未检查'}</span>
+                {value?.checkedAt && (
+                  <span className='font-mono'>
+                    {formatDateTime(value.checkedAt)}
+                  </span>
+                )}
+              </div>
+            </div>
+          </section>
 
           {showUpdatePanel && (
-            <div className='space-y-2.5 rounded-lg border bg-background p-3'>
+            <section className='space-y-3 rounded-lg border bg-card p-3 shadow-sm'>
               {value?.hasUpdate && (
-                <div className='flex items-center gap-2'>
-                  <div className='min-w-0 flex-1'>
+                <div className='space-y-2'>
+                  <div className='space-y-1'>
                     <div className='text-xs text-muted-foreground'>更新版本</div>
-                    <div className='truncate font-mono text-sm font-semibold'>
+                    <div className='break-all font-mono text-base font-semibold leading-5'>
                       {value.latestVersion}
                     </div>
                   </div>
                   {!isActiveUpdate(update) && update?.status !== 'ready' && (
                     <Button
                       type='button'
-                      size='sm'
-                      className='h-8'
+                      className='h-9 w-full'
                       disabled={!canApply}
                       onClick={() => applyMutation.mutate()}
                     >
-                      <UploadCloud />
-                      更新
+                      <UploadCloud className='size-4' />
+                      一键更新
                     </Button>
                   )}
                 </div>
@@ -164,15 +160,15 @@ export function UpdateSwitch() {
               {canRestart && (
                 <Button
                   type='button'
-                  className='w-full'
+                  className='h-9 w-full'
                   disabled={restartMutation.isPending}
                   onClick={() => restartMutation.mutate()}
                 >
-                  <RotateCw />
-                  立即重启
+                  <RotateCw className='size-4' />
+                  重启服务
                 </Button>
               )}
-            </div>
+            </section>
           )}
         </div>
       </DropdownMenuContent>
@@ -192,9 +188,9 @@ function UpdateProgress({ update }: { update: UpdateRun }) {
           {statusText(update)}
         </span>
         {isDone ? (
-          <CheckCircle2 className='size-4 text-emerald-500' />
+          <CheckCircle2 className='size-4 shrink-0 text-emerald-500' />
         ) : (
-          <span className='font-mono text-xs text-muted-foreground'>
+          <span className='shrink-0 font-mono text-xs text-muted-foreground'>
             {progress}%
           </span>
         )}
@@ -211,14 +207,14 @@ function UpdateProgress({ update }: { update: UpdateRun }) {
       </div>
       {update.status === 'ready' && (
         <div className='text-xs text-muted-foreground'>
-          进度已完成，重启服务后切换到新版本。
+          更新已准备完成，重启服务后切换到新版本。
         </div>
       )}
       {update.status === 'restarting' && (
         <div className='text-xs text-muted-foreground'>服务正在重启...</div>
       )}
       {isError && (
-        <div className='max-h-20 overflow-auto text-xs text-destructive'>
+        <div className='max-h-20 overflow-auto rounded-md bg-destructive/10 p-2 text-xs text-destructive'>
           {update.message}
         </div>
       )}
