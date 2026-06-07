@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ChevronRight, Laptop, Moon, Sun } from 'lucide-react'
 import { useSearch } from '@/context/search-provider'
 import { useTheme } from '@/context/theme-provider'
+import { getCommandNavGroups } from '@/services/module-registry'
 import {
   CommandDialog,
   CommandEmpty,
@@ -12,7 +13,6 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
-import { sidebarData } from './layout/data/sidebar-data'
 import { ScrollArea } from './ui/scroll-area'
 
 export function CommandMenu() {
@@ -34,16 +34,16 @@ export function CommandMenu() {
       <CommandList>
         <ScrollArea type='hover' className='h-72 pe-1'>
           <CommandEmpty>未找到结果。</CommandEmpty>
-          {sidebarData.navGroups.map((group) => (
+          {getCommandNavGroups().map((group) => (
             <CommandGroup key={group.title} heading={group.title}>
               {group.items.map((navItem, i) => {
-                if (navItem.url)
+                if (!navItem.children?.length) {
                   return (
                     <CommandItem
-                      key={`${navItem.url}-${i}`}
+                      key={`${navItem.path}-${i}`}
                       value={navItem.title}
                       onSelect={() => {
-                        runCommand(() => navigate({ to: navItem.url }))
+                        runCommand(() => navigate({ to: navItem.path }))
                       }}
                     >
                       <div className='flex size-4 items-center justify-center'>
@@ -52,13 +52,14 @@ export function CommandMenu() {
                       {navItem.title}
                     </CommandItem>
                   )
+                }
 
-                return navItem.items?.map((subItem, i) => (
+                return navItem.children.map((subItem, i) => (
                   <CommandItem
-                    key={`${navItem.title}-${subItem.url}-${i}`}
-                    value={`${navItem.title}-${subItem.url}`}
+                    key={`${navItem.title}-${subItem.path}-${i}`}
+                    value={`${navItem.title}-${subItem.title}`}
                     onSelect={() => {
-                      runCommand(() => navigate({ to: subItem.url }))
+                      runCommand(() => navigate({ to: subItem.path }))
                     }}
                   >
                     <div className='flex size-4 items-center justify-center'>

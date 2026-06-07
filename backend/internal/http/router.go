@@ -1,20 +1,16 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
-	"ov-dash/backend/internal/modules/apps"
 	"ov-dash/backend/internal/modules/auth"
-	"ov-dash/backend/internal/modules/chats"
-	"ov-dash/backend/internal/modules/dashboard"
-	"ov-dash/backend/internal/modules/servers"
-	"ov-dash/backend/internal/modules/tasks"
-	"ov-dash/backend/internal/modules/updates"
-	"ov-dash/backend/internal/modules/users"
 	"ov-dash/backend/internal/platform"
+	"ov-dash/backend/internal/platform/capability"
+	platformmodule "ov-dash/backend/internal/platform/module"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -36,53 +32,36 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 	r.Get("/readyz", health.Readiness)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		proxySettings := NewProxySettingsHandler(runtime.Proxy)
 		authService := auth.NewService(auth.NewRepository(runtime.DB))
-		authHandler := NewAuthHandler(authService)
-		updatesHandler := NewUpdatesHandler(updates.NewService(runtime.Config, runtime.Logger))
-		serverRepository := servers.NewRepository(runtime.DB)
-		serverConnections := NewServerConnectionsHandler(
-			servers.NewService(serverRepository),
-			servers.NewCollector(serverRepository),
-		)
+		policy := capability.DefaultRolePolicy()
+		requireCapability := func(value capability.Capability) func(http.Handler) http.Handler {
+			return capability.RequireCapability(policy, currentCapabilityUser, value)
+		}
 
 		r.Get("/health", health.Readiness)
-		r.Post("/auth/login", authHandler.Login)
 
-		r.Group(func(r chi.Router) {
-			r.Use(authMiddleware(authService))
-
-			r.Post("/auth/logout", authHandler.Logout)
-			r.Get("/auth/me", authHandler.Me)
-			r.Put("/auth/password", authHandler.ChangePassword)
-			r.Get("/updates", updatesHandler.Status)
-			r.Post("/updates/check", updatesHandler.Check)
-			r.Post("/updates/apply", updatesHandler.Update)
-			r.Post("/updates/restart", updatesHandler.Restart)
-			r.Get("/platform", NewPlatformHandler(runtime).Status)
-			r.Post("/jobs", NewJobsHandler(runtime).Create)
-			r.Get("/dashboard", NewDashboardHandler(dashboard.NewService()).Snapshot)
-			tasksHandler := NewTasksHandler(tasks.NewService(tasks.NewRepository(runtime.DB)))
-			r.Get("/tasks", tasksHandler.List)
-			r.Delete("/tasks", tasksHandler.Delete)
-			r.Get("/users", NewUsersHandler(users.NewService(users.NewRepository(runtime.DB))).List)
-			r.Get("/apps", NewAppsHandler(apps.NewService(apps.NewRepository(runtime.DB))).List)
-			r.Get("/chats", NewChatsHandler(chats.NewService(chats.NewRepository(runtime.DB))).ListConversations)
-			r.Get("/proxy-settings", proxySettings.Get)
-			r.Put("/proxy-settings", proxySettings.Update)
-			r.Get("/server-connections", serverConnections.List)
-			r.Post("/server-connections/monitor/touch", serverConnections.TouchMonitor)
-			r.Post("/server-connections", serverConnections.Save)
-			r.Get("/server-connections/{id}/metrics", serverConnections.Metrics)
-			r.Post("/server-connections/{id}/agent/update", serverConnections.UpdateAgent)
-			r.Post("/server-connections/{id}/ssh/command", serverConnections.RunCommand)
-			r.Get("/server-connections/{id}/ssh/ws", serverConnections.Shell)
-			r.Put("/server-connections/{id}", serverConnections.Save)
-			r.Delete("/server-connections/{id}", serverConnections.Delete)
+		defaultRegistry().RegisterRoutes(platformmodule.Context{
+			Config:            runtime.Config,
+			DB:                runtime.DB,
+			Queue:             runtime.Queue,
+			Cache:             runtime.Cache,
+			Events:            runtime.Events,
+			Logger:            runtime.Logger,
+			PublicRouter:      r,
+			ProtectedRouter:   r.With(authMiddleware(authService)),
+			RequireCapability: requireCapability,
 		})
 	})
 
 	return r
+}
+
+func currentCapabilityUser(ctx context.Context) (capability.User, bool) {
+	user, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return capability.User{}, false
+	}
+	return capability.User{Role: user.Role}, true
 }
 
 func timeoutExceptWebSocket(timeout time.Duration) func(http.Handler) http.Handler {

@@ -42,6 +42,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   Form,
   FormControl,
   FormField,
@@ -50,13 +57,6 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import {
   Select,
   SelectContent,
@@ -72,6 +72,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+
+const savedPrivateKeyLabel = '已保存私钥'
 
 const formSchema = z.object({
   name: z.string().trim().min(1, '请输入名称。'),
@@ -230,7 +232,9 @@ export function ServerConnectionSettings() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align='end' className='w-36'>
-                        <DropdownMenuItem onClick={() => setTerminalServer(item)}>
+                        <DropdownMenuItem
+                          onClick={() => setTerminalServer(item)}
+                        >
                           <Terminal />
                           连接
                         </DropdownMenuItem>
@@ -447,7 +451,8 @@ function ServerTerminalDialog({
       }
     }
     socket.onerror = () => {
-      const message = 'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
+      const message =
+        'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
       terminal.writeln('')
       terminal.writeln(message)
       toast.error(message)
@@ -487,13 +492,7 @@ function ServerTerminalDialog({
           <DialogTitle className='px-5 pt-5'>
             SSH - {server?.connection_hint}
             <span className='ml-3 text-xs font-normal text-muted-foreground'>
-              {status === 'connecting'
-                ? '连接中'
-                : status === 'open'
-                  ? '已连接'
-                  : status === 'closed'
-                    ? '已断开'
-                    : ''}
+              {getTerminalStatusText(status)}
             </span>
           </DialogTitle>
         </DialogHeader>
@@ -557,7 +556,7 @@ function ServerConnectionDialog({
             auth_type: item.auth_type,
             password: '',
             private_key: '',
-            key_file_name: item.has_private_key ? '已保存私钥' : '',
+            key_file_name: item.has_private_key ? savedPrivateKeyLabel : '',
             expires_at: item.expires_at ? item.expires_at.slice(0, 10) : '',
             clear_secret: false,
           }
@@ -641,7 +640,9 @@ function ServerConnectionDialog({
                       <FormLabel>登录方式</FormLabel>
                       <Select
                         value={field.value}
-                        onValueChange={(value) => field.onChange(value)}
+                        onValueChange={(value) =>
+                          field.onChange(value as ServerAuthType)
+                        }
                       >
                         <FormControl>
                           <SelectTrigger className='w-full'>
@@ -693,7 +694,8 @@ function ServerConnectionDialog({
                             <div className='flex min-w-0 items-center gap-2 text-sm text-muted-foreground'>
                               <FileKey2 className='size-4 shrink-0' />
                               <span className='truncate'>
-                                {keyFileName && keyFileName !== '已保存私钥'
+                                {keyFileName &&
+                                keyFileName !== savedPrivateKeyLabel
                                   ? keyFileName
                                   : '未选择新文件'}
                               </span>
@@ -796,6 +798,15 @@ function TextField({
       )}
     />
   )
+}
+
+function getTerminalStatusText(
+  status: 'idle' | 'connecting' | 'open' | 'closed'
+) {
+  if (status === 'connecting') return '连接中'
+  if (status === 'open') return '已连接'
+  if (status === 'closed') return '已断开'
+  return ''
 }
 
 function formatDate(value: string | null) {

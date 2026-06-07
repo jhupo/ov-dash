@@ -1,6 +1,7 @@
-package http
+package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -8,17 +9,16 @@ import (
 	"strings"
 	"time"
 
-	"ov-dash/backend/internal/modules/auth"
+	"ov-dash/backend/internal/platform/httpx"
+	platformmodule "ov-dash/backend/internal/platform/module"
 )
 
 const sessionCookieName = "ovdash_session"
 
-type AuthHandler struct {
-	service *auth.Service
-}
+type Module struct{}
 
-func NewAuthHandler(service *auth.Service) *AuthHandler {
-	return &AuthHandler{service: service}
+type Handler struct {
+	service *Service
 }
 
 type loginRequest struct {
@@ -31,13 +31,32 @@ type changePasswordRequest struct {
 	NewPassword     string `json:"new_password"`
 }
 
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+type currentUserContextKey struct{}
+
+func NewModule() Module {
+	return Module{}
+}
+
+func (Module) Name() string {
+	return "auth"
+}
+
+func (Module) RegisterRoutes(ctx platformmodule.Context) {
+	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
+
+	ctx.PublicRouter.Post("/auth/login", handler.Login)
+	ctx.ProtectedRouter.Post("/auth/logout", handler.Logout)
+	ctx.ProtectedRouter.Get("/auth/me", handler.Me)
+	ctx.ProtectedRouter.Put("/auth/password", handler.ChangePassword)
+}
+
+func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var payload loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	result, err := h.service.Login(r.Context(), auth.LoginInput{
+	result, err := h.service.Login(r.Context(), LoginInput{
 		Email:     payload.Email,
 		Password:  payload.Password,
 		UserAgent: r.UserAgent(),
@@ -46,58 +65,67 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "login_failed"
-		if errors.Is(err, auth.ErrInvalidCredentials) || errors.Is(err, auth.ErrInactiveUser) {
+		if errors.Is(err, ErrInvalidCredentials) || errors.Is(err, ErrInactiveUser) {
 			status = http.StatusUnauthorized
 			code = "invalid_credentials"
 		}
-		writeJSON(w, status, map[string]string{"error": code})
+		httpx.WriteJSON(w, status, map[string]string{"error": code})
 		return
 	}
 	setSessionCookie(w, r, result.Token, result.ExpiresAt)
-	writeJSON(w, http.StatusOK, map[string]any{"user": result.User, "expiresAt": result.ExpiresAt})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": result.User, "expiresAt": result.ExpiresAt})
 }
 
-func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	_ = h.service.Logout(r.Context(), tokenFromRequest(r))
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	_ = h.service.Logout(r.Context(), TokenFromRequest(r))
 	clearSessionCookie(w, r)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	user, ok := UserFromContext(r.Context())
 	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": user})
 }
 
-func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	user, ok := UserFromContext(r.Context())
 	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
 	var payload changePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
 	if err := h.service.ChangePassword(r.Context(), user.ID, payload.CurrentPassword, payload.NewPassword); err != nil {
 		status := http.StatusInternalServerError
 		code := "password_change_failed"
-		if errors.Is(err, auth.ErrInvalidCredentials) {
+		if errors.Is(err, ErrInvalidCredentials) {
 			status = http.StatusUnauthorized
 			code = "invalid_credentials"
 		}
-		if errors.Is(err, auth.ErrPasswordTooShort) {
+		if errors.Is(err, ErrPasswordTooShort) {
 			status = http.StatusBadRequest
 			code = err.Error()
 		}
-		writeJSON(w, status, map[string]string{"error": code})
+		httpx.WriteJSON(w, status, map[string]string{"error": code})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func ContextWithUser(ctx context.Context, user User) context.Context {
+	return context.WithValue(ctx, currentUserContextKey{}, user)
+}
+
+func UserFromContext(ctx context.Context) (User, bool) {
+	user, ok := ctx.Value(currentUserContextKey{}).(User)
+	return user, ok
 }
 
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
@@ -108,7 +136,7 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 		HttpOnly: true,
 		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(auth.SessionDuration().Seconds()),
+		MaxAge:   int(SessionDuration().Seconds()),
 		Expires:  expiresAt,
 	}
 	http.SetCookie(w, cookie)
@@ -126,7 +154,7 @@ func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func tokenFromRequest(r *http.Request) string {
+func TokenFromRequest(r *http.Request) string {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		return cookie.Value
 	}

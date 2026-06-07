@@ -1,5 +1,5 @@
-import { type JSX } from 'react'
 import { Link, useLocation } from '@tanstack/react-router'
+import { type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { buttonVariants } from '@/components/ui/button'
 
@@ -7,7 +7,7 @@ type SidebarNavProps = React.HTMLAttributes<HTMLElement> & {
   items: {
     href: string
     title: string
-    icon: JSX.Element
+    icon: LucideIcon
   }[]
 }
 
@@ -23,21 +23,36 @@ export function SidebarNav({ className, items, ...props }: SidebarNavProps) {
       {...props}
     >
       {items.map((item) => (
-        <Link
+        <SidebarNavLink
           key={item.href}
-          to={item.href}
-          className={cn(
-            buttonVariants({ variant: 'ghost', size: 'sm' }),
-            pathname === item.href
-              ? 'bg-muted hover:bg-accent'
-              : 'hover:bg-accent',
-            'h-9 shrink-0 justify-start'
-          )}
-        >
-          <span className='me-2'>{item.icon}</span>
-          {item.title}
-        </Link>
+          item={item}
+          active={pathname === item.href}
+        />
       ))}
     </nav>
+  )
+}
+
+function SidebarNavLink({
+  active,
+  item,
+}: {
+  active: boolean
+  item: SidebarNavProps['items'][number]
+}) {
+  const Icon = item.icon
+
+  return (
+    <Link
+      to={item.href}
+      className={cn(
+        buttonVariants({ variant: 'ghost', size: 'sm' }),
+        active ? 'bg-muted hover:bg-accent' : 'hover:bg-accent',
+        'h-9 shrink-0 justify-start'
+      )}
+    >
+      <Icon className='me-2 size-[18px]' />
+      {item.title}
+    </Link>
   )
 }

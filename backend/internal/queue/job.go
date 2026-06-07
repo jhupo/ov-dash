@@ -16,6 +16,8 @@ type Job struct {
 	CreatedAt   time.Time      `json:"created_at"`
 }
 
+const DefaultMaxAttempts = 3
+
 func NewJob(jobType string, payload map[string]any) (Job, error) {
 	if jobType == "" {
 		return Job{}, errors.New("job type is required")
@@ -33,9 +35,21 @@ func NewJob(jobType string, payload map[string]any) (Job, error) {
 		ID:          id,
 		Type:        jobType,
 		Payload:     payload,
-		MaxAttempts: 3,
+		MaxAttempts: DefaultMaxAttempts,
 		CreatedAt:   time.Now().UTC(),
 	}, nil
+}
+
+func (j *Job) Normalize() {
+	if j.Payload == nil {
+		j.Payload = map[string]any{}
+	}
+	if j.MaxAttempts < 1 {
+		j.MaxAttempts = DefaultMaxAttempts
+	}
+	if j.CreatedAt.IsZero() {
+		j.CreatedAt = time.Now().UTC()
+	}
 }
 
 func randomID() (string, error) {
