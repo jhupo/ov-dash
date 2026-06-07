@@ -32,6 +32,24 @@ docker compose --env-file .env up -d --no-build
 
 Open `http://192.168.2.17` after the stack is healthy.
 
+For a private repository, the GHCR login token must be able to read the package images. Use a GitHub PAT classic with `read:packages` and repository read access, then log in with:
+
+```sh
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+```
+
+Production updates should pull tagged release images, not build on the server:
+
+```sh
+APP_VERSION=v0.1.5
+BACKEND_IMAGE=ghcr.io/jhupo/ov-dash-backend:${APP_VERSION}
+FRONTEND_IMAGE=ghcr.io/jhupo/ov-dash-frontend:${APP_VERSION}
+docker compose --env-file .env pull
+docker compose --env-file .env up -d --no-build
+```
+
+If pulling public base images is slow in China, configure Docker daemon registry mirrors or host-level proxy. Keep Compose image names canonical unless a specific mirror is known to preserve the exact upstream namespace and tags.
+
 For a clean Ubuntu host without Docker:
 
 ```sh

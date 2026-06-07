@@ -19,16 +19,19 @@ deploy/nginx/         nginx reverse proxy config
 docker-compose.yml    local/test deployment stack
 ```
 
-## Quick start
+## Quick Start
 
 ```bash
 cp .env.example .env
-docker compose up -d --build
+docker login ghcr.io
+docker compose --env-file .env pull
+docker compose --env-file .env up -d --no-build
 ```
 
 Local development:
 
 ```bash
+make compose-up-build
 make backend-api
 make backend-worker
 make frontend-dev
@@ -52,13 +55,7 @@ curl -X POST http://localhost:8080/api/v1/jobs \
 
 Target host: `192.168.2.17`
 
-```bash
-git clone <repo-url> /opt/ov-dash
-cd /opt/ov-dash
-cp .env.example .env
-vi .env
-docker compose --env-file .env up -d --build
-```
+Use the release image flow from `deploy/README.md`. Build on the server only for local test environments.
 
 Use host credentials through your normal secure channel and keep them outside the repository.
 
@@ -70,6 +67,7 @@ Start the full stack:
 
 ```sh
 make env
+make compose-pull
 make compose-up
 ```
 
