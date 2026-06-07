@@ -65,11 +65,14 @@ type PythonConfig struct {
 }
 
 type UpdateConfig struct {
-	WorkDir string
-	Remote  string
-	Image   string
-	Project string
-	Enabled bool
+	WorkDir                 string
+	Remote                  string
+	Image                   string
+	BackendImageRepository  string
+	FrontendImageRepository string
+	FallbackBuild           bool
+	Project                 string
+	Enabled                 bool
 }
 
 type MigrationsConfig struct {
@@ -114,11 +117,14 @@ func Load() Config {
 			ScriptsDir: env("PYTHON_SCRIPTS_DIR", "./scripts"),
 		},
 		Update: UpdateConfig{
-			WorkDir: env("UPDATE_WORKDIR", "/opt/ov-dash"),
-			Remote:  env("UPDATE_REMOTE", "origin"),
-			Image:   env("UPDATE_IMAGE", "ov-dash-backend:local"),
-			Project: env("UPDATE_PROJECT", "ov-dash"),
-			Enabled: boolEnv("UPDATE_ENABLED", true),
+			WorkDir:                 env("UPDATE_WORKDIR", "/opt/ov-dash"),
+			Remote:                  env("UPDATE_REMOTE", "origin"),
+			Image:                   env("UPDATE_IMAGE", "ov-dash-backend:local"),
+			BackendImageRepository:  env("UPDATE_BACKEND_IMAGE_REPOSITORY", "ghcr.io/jhupo/ov-dash-backend"),
+			FrontendImageRepository: env("UPDATE_FRONTEND_IMAGE_REPOSITORY", "ghcr.io/jhupo/ov-dash-frontend"),
+			FallbackBuild:           boolEnv("UPDATE_FALLBACK_BUILD", false),
+			Project:                 env("UPDATE_PROJECT", "ov-dash"),
+			Enabled:                 boolEnv("UPDATE_ENABLED", true),
 		},
 		Migrations: MigrationsConfig{
 			Dir: env("MIGRATIONS_DIR", "/migrations"),

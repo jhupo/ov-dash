@@ -27,6 +27,9 @@ x-backend-env: &backend-env
   UPDATE_WORKDIR: ${UPDATE_WORKDIR:-/opt/ov-dash}
   UPDATE_REMOTE: ${UPDATE_REMOTE:-origin}
   UPDATE_IMAGE: ${UPDATE_IMAGE:-ov-dash-backend:${APP_VERSION:-local}}
+  UPDATE_BACKEND_IMAGE_REPOSITORY: ${UPDATE_BACKEND_IMAGE_REPOSITORY:-ghcr.io/jhupo/ov-dash-backend}
+  UPDATE_FRONTEND_IMAGE_REPOSITORY: ${UPDATE_FRONTEND_IMAGE_REPOSITORY:-ghcr.io/jhupo/ov-dash-frontend}
+  UPDATE_FALLBACK_BUILD: ${UPDATE_FALLBACK_BUILD:-false}
   UPDATE_PROJECT: ${UPDATE_PROJECT:-ov-dash}
   UPDATE_ENABLED: ${UPDATE_ENABLED:-true}
   POSTGRES_DSN: postgres://${POSTGRES_USER:-ov_dash}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-ov_dash}?sslmode=disable
@@ -94,7 +97,7 @@ services:
       - ov_dash
 
   api:
-    image: ov-dash-backend:${APP_VERSION:-local}
+    image: ${BACKEND_IMAGE:-ov-dash-backend:${APP_VERSION:-local}}
     build: *backend-build
     command: ["/app/api"]
     user: "0:0"
@@ -125,7 +128,7 @@ services:
       - ov_dash
 
   worker:
-    image: ov-dash-backend:${APP_VERSION:-local}
+    image: ${BACKEND_IMAGE:-ov-dash-backend:${APP_VERSION:-local}}
     build: *backend-build
     command: ["/app/worker"]
     restart: unless-stopped
@@ -142,7 +145,7 @@ services:
       - ov_dash
 
   frontend:
-    image: ov-dash-frontend:${APP_VERSION:-local}
+    image: ${FRONTEND_IMAGE:-ov-dash-frontend:${APP_VERSION:-local}}
     build:
       context: .
       dockerfile: deploy/docker/frontend.Dockerfile

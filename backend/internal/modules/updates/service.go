@@ -222,7 +222,7 @@ func (s *Service) Restart(ctx context.Context) (UpdateResult, error) {
 	result.Progress = 95
 	s.writeUpdateState(result)
 
-	output, err := s.shell(ctx, "docker compose --env-file .env up -d")
+	output, err := s.shell(ctx, "docker compose --env-file .env up -d --no-build")
 	endedAt := time.Now().UTC()
 	result.EndedAt = &endedAt
 	if err != nil {
@@ -246,7 +246,14 @@ func (s *Service) Restart(ctx context.Context) (UpdateResult, error) {
 
 func (s *Service) startUpdater(ctx context.Context, version string) error {
 	statusPath := filepath.Join(s.cfg.Update.WorkDir, ".ovdash-update-status.json")
-	script := updaterScript(s.cfg.Update.Remote, version, statusPath)
+	script := updaterScript(
+		s.cfg.Update.Remote,
+		version,
+		statusPath,
+		s.cfg.Update.BackendImageRepository,
+		s.cfg.Update.FrontendImageRepository,
+		s.cfg.Update.FallbackBuild,
+	)
 	_, _ = s.command(ctx, "", "docker", "rm", "-f", updaterName(s.cfg.Update.Project))
 	args := []string{
 		"run",
@@ -282,8 +289,12 @@ func (s *Service) startUpdater(ctx context.Context, version string) error {
 	return nil
 }
 
-func updaterScript(remote string, version string, statusPath string) string {
+func updaterScript(remote string, version string, statusPath string, backendImageRepository string, frontendImageRepository string, fallbackBuild bool) string {
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	fallback := "false"
+	if fallbackBuild {
+		fallback = "true"
+	}
 	return fmt.Sprintf(`set -eu
 write_status() {
   status="$1"
@@ -293,19 +304,59 @@ write_status() {
   if [ "$status" != "running" ]; then ended=", \"endedAt\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ\")\"; fi
   printf '{"startedAt":"%s"%%s,"version":"%s","status":"%%s","message":"%%s","progress":%%s}\n' "$ended" "$status" "$(printf '%%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')" "$progress" > %s
 }
+set_env() {
+  key="$1"
+  value="$2"
+  tmp="$(mktemp)"
+  if [ -f .env ]; then
+    grep -v "^${key}=" .env > "$tmp" || true
+  fi
+  printf '%%s=%%s\n' "$key" "$value" >> "$tmp"
+  mv "$tmp" .env
+}
+
+backend_image="%s:%s"
+frontend_image="%s:%s"
+
 write_status running 正在拉取版本 20
-if git fetch --tags --force %s && git checkout --force %s && git reset --hard %s && docker compose --env-file .env build; then
-  write_status ready 更新已准备完成 90
-else
+if ! git fetch --tags --force %s || ! git checkout --force %s || ! git reset --hard %s; then
   write_status error 更新失败 0
   exit 1
-fi`,
+fi
+
+set_env APP_VERSION %s
+set_env BACKEND_IMAGE "$backend_image"
+set_env FRONTEND_IMAGE "$frontend_image"
+set_env UPDATE_IMAGE "$backend_image"
+
+write_status running 正在拉取镜像 55
+if docker compose --env-file .env pull api worker frontend; then
+  write_status ready 更新已准备完成 90
+  exit 0
+fi
+
+if [ %s = true ]; then
+  write_status running 镜像拉取失败，正在本机构建 65
+  if docker compose --env-file .env build api worker frontend; then
+    write_status ready 更新已准备完成 90
+    exit 0
+  fi
+fi
+
+write_status error 镜像拉取失败 0
+exit 1`,
 		startedAt,
 		jsonEscape(version),
 		shellQuote(statusPath),
+		jsonEscape(backendImageRepository),
+		jsonEscape(version),
+		jsonEscape(frontendImageRepository),
+		jsonEscape(version),
 		shellQuote(remote),
 		shellQuote(version),
 		shellQuote(version),
+		shellQuote(version),
+		fallback,
 	)
 }
 
