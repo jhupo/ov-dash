@@ -51,6 +51,7 @@ export type WikiRevision = {
   summary: string
   content_md: string
   tags: string
+  resources: WikiResource[]
   created_by: string
   created_at: string
 }

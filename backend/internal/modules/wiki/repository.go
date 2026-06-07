@@ -2,6 +2,7 @@ package wiki
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"ov-dash/backend/internal/db"
@@ -137,7 +138,8 @@ func (r *Repository) Create(ctx context.Context, input SavePageInput) (Page, err
 	if err != nil {
 		return Page{}, err
 	}
-	if err := r.replaceResources(ctx, tx, page.ID, input.Resources); err != nil {
+	page.Resources, err = r.replaceResources(ctx, tx, page.ID, input.Resources)
+	if err != nil {
 		return Page{}, err
 	}
 	if err := r.insertRevision(ctx, tx, page, input.ActorID); err != nil {
@@ -191,7 +193,8 @@ func (r *Repository) Update(ctx context.Context, input SavePageInput) (Page, err
 	if err != nil {
 		return Page{}, err
 	}
-	if err := r.replaceResources(ctx, tx, page.ID, input.Resources); err != nil {
+	page.Resources, err = r.replaceResources(ctx, tx, page.ID, input.Resources)
+	if err != nil {
 		return Page{}, err
 	}
 	if err := r.insertRevision(ctx, tx, page, input.ActorID); err != nil {
@@ -224,6 +227,7 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 		       summary,
 		       content_md,
 		       tags,
+		       resources_json,
 		       COALESCE(created_by, '') AS created_by,
 		       created_at
 		FROM wiki_page_revisions
@@ -238,6 +242,7 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 	items := make([]Revision, 0)
 	for rows.Next() {
 		var item Revision
+		var resourcesJSON []byte
 		if err := rows.Scan(
 			&item.ID,
 			&item.PageID,
@@ -248,27 +253,34 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 			&item.Summary,
 			&item.ContentMD,
 			&item.Tags,
+			&resourcesJSON,
 			&item.CreatedBy,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if len(resourcesJSON) > 0 {
+			if err := json.Unmarshal(resourcesJSON, &item.Resources); err != nil {
+				return nil, err
+			}
 		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
-func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID string, resources []SaveResourceInput) error {
+func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID string, resources []SaveResourceInput) ([]Resource, error) {
 	if _, err := tx.Exec(ctx, `DELETE FROM wiki_page_resources WHERE page_id = $1`, pageID); err != nil {
-		return err
+		return nil, err
 	}
 
+	items := make([]Resource, 0, len(resources))
 	for index, resource := range resources {
 		resourceID := resource.ID
 		if resourceID == "" {
 			id, err := randomID()
 			if err != nil {
-				return err
+				return nil, err
 			}
 			resourceID = id
 		}
@@ -277,7 +289,7 @@ func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID str
 			sortOrder = index + 1
 		}
 
-		_, err := tx.Exec(ctx, `
+		row := tx.QueryRow(ctx, `
 			INSERT INTO wiki_page_resources (
 				id,
 				page_id,
@@ -292,13 +304,43 @@ func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID str
 				sort_order
 			)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			RETURNING id,
+			          page_id,
+			          resource_type,
+			          title,
+			          host,
+			          port,
+			          url,
+			          username,
+			          password,
+			          note,
+			          sort_order,
+			          created_at,
+			          updated_at
 		`, resourceID, pageID, resource.ResourceType, resource.Title, resource.Host, resource.Port, resource.URL, resource.Username, resource.Password, resource.Note, sortOrder)
+		var item Resource
+		err := row.Scan(
+			&item.ID,
+			&item.PageID,
+			&item.ResourceType,
+			&item.Title,
+			&item.Host,
+			&item.Port,
+			&item.URL,
+			&item.Username,
+			&item.Password,
+			&item.Note,
+			&item.SortOrder,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		)
 		if err != nil {
-			return err
+			return nil, err
 		}
+		items = append(items, item)
 	}
 
-	return nil
+	return items, nil
 }
 
 func (r *Repository) listResources(ctx context.Context, pageID string) ([]Resource, error) {
@@ -361,6 +403,11 @@ func (r *Repository) insertRevision(ctx context.Context, tx pgx.Tx, page Page, a
 	if err != nil {
 		return err
 	}
+	resourcesJSONBytes, err := json.Marshal(page.Resources)
+	if err != nil {
+		return err
+	}
+	resourcesJSON := string(resourcesJSONBytes)
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO wiki_page_revisions (
@@ -373,6 +420,7 @@ func (r *Repository) insertRevision(ctx context.Context, tx pgx.Tx, page Page, a
 			summary,
 			content_md,
 			tags,
+			resources_json,
 			created_by
 		)
 		VALUES (
@@ -385,9 +433,10 @@ func (r *Repository) insertRevision(ctx context.Context, tx pgx.Tx, page Page, a
 			$6,
 			$7,
 			$8,
-			NULLIF($9, '')
+			$9::jsonb,
+			NULLIF($10, '')
 		)
-	`, revisionID, page.ID, page.Title, page.PageType, page.Category, page.Summary, page.ContentMD, page.Tags, actorID)
+	`, revisionID, page.ID, page.Title, page.PageType, page.Category, page.Summary, page.ContentMD, page.Tags, resourcesJSON, actorID)
 	return err
 }
 

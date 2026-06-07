@@ -57,6 +57,7 @@ type Revision struct {
 	Summary   string    `json:"summary"`
 	ContentMD string    `json:"content_md"`
 	Tags      string    `json:"tags"`
+	Resources []Resource `json:"resources"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 }

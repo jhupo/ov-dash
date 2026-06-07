@@ -1,5 +1,6 @@
 import {
   type Dispatch,
+  type DragEvent,
   type SetStateAction,
   useEffect,
   useMemo,
@@ -7,10 +8,27 @@ import {
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  createWikiPage,
+  deleteWikiPage,
+  getWikiPages,
+  updateWikiPage,
+  type SaveWikiPagePayload,
+  type SaveWikiResourcePayload,
+  type WikiPage,
+  type WikiPageType,
+  type WikiResource,
+  type WikiResourceType,
+} from '@/services/wiki'
+import {
+  ArrowDown,
+  ArrowUp,
   BookOpen,
+  ChevronDown,
+  ChevronUp,
   Copy,
   ExternalLink,
   FileText,
+  GripVertical,
   KeyRound,
   Link2,
   Monitor,
@@ -24,21 +42,8 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { MarkdownViewer } from '@/features/help-center/markdown-viewer'
-import {
-  createWikiPage,
-  deleteWikiPage,
-  getWikiPages,
-  updateWikiPage,
-  type SaveWikiPagePayload,
-  type SaveWikiResourcePayload,
-  type WikiPage,
-  type WikiPageType,
-  type WikiResource,
-  type WikiResourceType,
-} from '@/services/wiki'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -54,6 +59,7 @@ import { Main } from '@/components/layout/main'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
+import { MarkdownViewer } from '@/features/help-center/markdown-viewer'
 
 type DraftWikiResource = SaveWikiResourcePayload & {
   draft_id: string
@@ -86,7 +92,13 @@ const resourceTypeOptions: {
   { label: '备注', value: 'note', icon: FileText },
 ]
 
-const categoryOptions = ['机器信息', '操作手册', '故障排查', '外部链接', '账号资料']
+const categoryOptions = [
+  '机器信息',
+  '操作手册',
+  '故障排查',
+  '外部链接',
+  '账号资料',
+]
 
 const runbookTemplate = `# 操作手册标题
 
@@ -337,8 +349,13 @@ export function Wiki() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: SaveWikiPagePayload }) =>
-      updateWikiPage(id, payload),
+    mutationFn: ({
+      id,
+      payload,
+    }: {
+      id: string
+      payload: SaveWikiPagePayload
+    }) => updateWikiPage(id, payload),
     onSuccess: async (page) => {
       await queryClient.invalidateQueries({ queryKey: ['wiki', 'pages'] })
       setSelectedID(page.id)
@@ -363,9 +380,7 @@ export function Wiki() {
   function startCreate(pageType: WikiPageType = 'document') {
     const nextDraft = { ...emptyDraft(), page_type: pageType }
     if (pageType === 'machine') {
-      nextDraft.resources = [
-        { ...emptyResource('machine'), title: '机器信息' },
-      ]
+      nextDraft.resources = [{ ...emptyResource('machine'), title: '机器信息' }]
     }
     setDraft(nextDraft)
     setSelectedID('')
@@ -720,6 +735,10 @@ function WikiEditor({
   onCancel: () => void
   onSave: () => void
 }) {
+  const [collapsedResources, setCollapsedResources] = useState<Set<string>>(
+    () => new Set()
+  )
+
   function updateDraft(value: Partial<DraftWikiPage>) {
     setDraft((current) => ({ ...current, ...value }))
   }
@@ -729,6 +748,18 @@ function WikiEditor({
       ...current,
       resources: [...current.resources, emptyResource(resourceType)],
     }))
+  }
+
+  function toggleResourceCollapse(draftID: string) {
+    setCollapsedResources((current) => {
+      const next = new Set(current)
+      if (next.has(draftID)) {
+        next.delete(draftID)
+      } else {
+        next.add(draftID)
+      }
+      return next
+    })
   }
 
   function applyRunbookTemplate() {
@@ -901,8 +932,13 @@ function WikiEditor({
                   <ResourceEditorCard
                     key={resource.draft_id}
                     index={index}
+                    resourceCount={draft.resources.length}
                     resource={resource}
+                    collapsed={collapsedResources.has(resource.draft_id)}
                     setDraft={setDraft}
+                    onToggleCollapse={() =>
+                      toggleResourceCollapse(resource.draft_id)
+                    }
                   />
                 ))}
               </div>
@@ -928,14 +964,28 @@ function WikiEditor({
 
 function ResourceEditorCard({
   index,
+  resourceCount,
   resource,
+  collapsed,
   setDraft,
+  onToggleCollapse,
 }: {
   index: number
+  resourceCount: number
   resource: DraftWikiResource
+  collapsed: boolean
   setDraft: Dispatch<SetStateAction<DraftWikiPage>>
+  onToggleCollapse: () => void
 }) {
   const Icon = resourceTypeIcon(resource.resource_type)
+  const summary = [
+    resource.title,
+    resource.host,
+    resource.url,
+    resource.username,
+  ]
+    .filter(Boolean)
+    .join(' / ')
 
   function updateResource(value: Partial<DraftWikiResource>) {
     setDraft((current) => ({
@@ -944,6 +994,67 @@ function ResourceEditorCard({
         item.draft_id === resource.draft_id ? { ...item, ...value } : item
       ),
     }))
+  }
+
+  function moveResource(offset: number) {
+    setDraft((current) => {
+      const currentIndex = current.resources.findIndex(
+        (item) => item.draft_id === resource.draft_id
+      )
+      const targetIndex = currentIndex + offset
+      if (
+        currentIndex < 0 ||
+        targetIndex < 0 ||
+        targetIndex >= current.resources.length
+      ) {
+        return current
+      }
+
+      const resources = [...current.resources]
+      const [moved] = resources.splice(currentIndex, 1)
+      resources.splice(targetIndex, 0, moved)
+      return { ...current, resources }
+    })
+  }
+
+  function moveResourceTo(draggedDraftID: string) {
+    setDraft((current) => {
+      const fromIndex = current.resources.findIndex(
+        (item) => item.draft_id === draggedDraftID
+      )
+      const targetIndex = current.resources.findIndex(
+        (item) => item.draft_id === resource.draft_id
+      )
+      if (fromIndex < 0 || targetIndex < 0 || fromIndex === targetIndex) {
+        return current
+      }
+
+      const resources = [...current.resources]
+      const [moved] = resources.splice(fromIndex, 1)
+      resources.splice(targetIndex, 0, moved)
+      return { ...current, resources }
+    })
+  }
+
+  function duplicateResource() {
+    setDraft((current) => {
+      const currentIndex = current.resources.findIndex(
+        (item) => item.draft_id === resource.draft_id
+      )
+      if (currentIndex < 0) {
+        return current
+      }
+
+      const source = current.resources[currentIndex]
+      const resources = [...current.resources]
+      resources.splice(currentIndex + 1, 0, {
+        ...source,
+        id: undefined,
+        draft_id: draftID(),
+        title: source.title ? `${source.title} 副本` : '',
+      })
+      return { ...current, resources }
+    })
   }
 
   function removeResource() {
@@ -955,125 +1066,226 @@ function ResourceEditorCard({
     }))
   }
 
+  function handleDragStart(event: DragEvent<HTMLDivElement>) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', resource.draft_id)
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    moveResourceTo(event.dataTransfer.getData('text/plain'))
+  }
+
   return (
-    <div className='rounded-md border bg-muted/20 p-3'>
-      <div className='mb-3 flex items-center justify-between gap-2'>
-        <div className='flex items-center gap-2 text-sm font-medium'>
-          <Icon className='size-4' />
-          {resourceTypeLabel(resource.resource_type)} {index + 1}
+    <div
+      className='rounded-md border bg-muted/20 p-3'
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <div
+        className={cn(
+          'flex items-center justify-between gap-2',
+          !collapsed && 'mb-3'
+        )}
+      >
+        <div className='flex min-w-0 items-center gap-2'>
+          <div
+            className='flex size-8 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground active:cursor-grabbing'
+            draggable
+            onDragStart={handleDragStart}
+            title='拖拽排序'
+          >
+            <GripVertical className='size-4' />
+          </div>
+          <Icon className='size-4 shrink-0' />
+          <div className='min-w-0'>
+            <div className='truncate text-sm font-medium'>
+              {resourceTypeLabel(resource.resource_type)} {index + 1}
+            </div>
+            {collapsed && summary && (
+              <div className='truncate text-xs text-muted-foreground'>
+                {summary}
+              </div>
+            )}
+          </div>
         </div>
-        <Button
-          type='button'
-          variant='ghost'
-          size='icon'
-          className='size-8'
-          onClick={removeResource}
-        >
-          <X className='size-4' />
-        </Button>
+        <div className='flex shrink-0 items-center gap-1'>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8'
+            onClick={() => moveResource(-1)}
+            disabled={index === 0}
+            aria-label='上移资源'
+            title='上移'
+          >
+            <ArrowUp className='size-4' />
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8'
+            onClick={() => moveResource(1)}
+            disabled={index === resourceCount - 1}
+            aria-label='下移资源'
+            title='下移'
+          >
+            <ArrowDown className='size-4' />
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8'
+            onClick={duplicateResource}
+            aria-label='复制资源'
+            title='复制'
+          >
+            <Copy className='size-4' />
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8'
+            onClick={onToggleCollapse}
+            aria-label={collapsed ? '展开资源' : '折叠资源'}
+            title={collapsed ? '展开' : '折叠'}
+          >
+            {collapsed ? (
+              <ChevronDown className='size-4' />
+            ) : (
+              <ChevronUp className='size-4' />
+            )}
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8'
+            onClick={removeResource}
+            aria-label='删除资源'
+            title='删除'
+          >
+            <X className='size-4' />
+          </Button>
+        </div>
       </div>
 
-      <div className='grid gap-3 md:grid-cols-2'>
-        <div className='space-y-2'>
-          <label className='text-sm font-medium'>资源类型</label>
-          <Select
-            value={resource.resource_type}
-            onValueChange={(value) =>
-              updateResource({ resource_type: value as WikiResourceType })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {resourceTypeOptions.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className='space-y-2'>
-          <label className='text-sm font-medium'>名称</label>
-          <Input
-            value={resource.title}
-            onChange={(event) => updateResource({ title: event.target.value })}
-            placeholder='例如 主库 / Grafana / 管理后台'
-          />
-        </div>
-
-        {resource.resource_type === 'machine' && (
-          <>
-            <div className='space-y-2'>
-              <label className='text-sm font-medium'>机器地址</label>
-              <Input
-                value={resource.host}
-                onChange={(event) =>
-                  updateResource({ host: event.target.value })
-                }
-                placeholder='例如 10.0.0.12'
-              />
-            </div>
-            <div className='space-y-2'>
-              <label className='text-sm font-medium'>端口</label>
-              <Input
-                value={resource.port}
-                onChange={(event) =>
-                  updateResource({ port: event.target.value })
-                }
-                placeholder='22'
-              />
-            </div>
-          </>
-        )}
-
-        {resource.resource_type === 'link' && (
-          <div className='space-y-2 md:col-span-2'>
-            <label className='text-sm font-medium'>链接地址</label>
+      {!collapsed && (
+        <div className='grid gap-3 md:grid-cols-2'>
+          <div className='space-y-2'>
+            <label className='text-sm font-medium'>资源类型</label>
+            <Select
+              value={resource.resource_type}
+              onValueChange={(value) =>
+                updateResource({ resource_type: value as WikiResourceType })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {resourceTypeOptions.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className='space-y-2'>
+            <label className='text-sm font-medium'>名称</label>
             <Input
-              value={resource.url}
-              onChange={(event) => updateResource({ url: event.target.value })}
-              placeholder='https://'
+              value={resource.title}
+              onChange={(event) =>
+                updateResource({ title: event.target.value })
+              }
+              placeholder='例如 主库 / Grafana / 管理后台'
             />
           </div>
-        )}
 
-        {resource.resource_type !== 'note' && (
-          <>
-            <div className='space-y-2'>
-              <label className='text-sm font-medium'>登录用户</label>
+          {resource.resource_type === 'machine' && (
+            <>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium'>机器地址</label>
+                <Input
+                  value={resource.host}
+                  onChange={(event) =>
+                    updateResource({ host: event.target.value })
+                  }
+                  placeholder='例如 10.0.0.12'
+                />
+              </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium'>端口</label>
+                <Input
+                  value={resource.port}
+                  onChange={(event) =>
+                    updateResource({ port: event.target.value })
+                  }
+                  placeholder='22'
+                />
+              </div>
+            </>
+          )}
+
+          {resource.resource_type === 'link' && (
+            <div className='space-y-2 md:col-span-2'>
+              <label className='text-sm font-medium'>链接地址</label>
               <Input
-                value={resource.username}
+                value={resource.url}
                 onChange={(event) =>
-                  updateResource({ username: event.target.value })
+                  updateResource({ url: event.target.value })
                 }
-                placeholder='root / admin'
+                placeholder='https://'
               />
             </div>
-            <div className='space-y-2'>
-              <label className='text-sm font-medium'>登录密码</label>
-              <Input
-                value={resource.password}
-                onChange={(event) =>
-                  updateResource({ password: event.target.value })
-                }
-                placeholder='直接显示给内部成员'
-              />
-            </div>
-          </>
-        )}
+          )}
 
-        <div className='space-y-2 md:col-span-2'>
-          <label className='text-sm font-medium'>备注</label>
-          <Textarea
-            value={resource.note}
-            onChange={(event) => updateResource({ note: event.target.value })}
-            className='min-h-20'
-            placeholder='补充说明、使用场景、注意事项'
-          />
+          {resource.resource_type !== 'note' && (
+            <>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium'>登录用户</label>
+                <Input
+                  value={resource.username}
+                  onChange={(event) =>
+                    updateResource({ username: event.target.value })
+                  }
+                  placeholder='root / admin'
+                />
+              </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium'>登录密码</label>
+                <Input
+                  value={resource.password}
+                  onChange={(event) =>
+                    updateResource({ password: event.target.value })
+                  }
+                  placeholder='直接显示给内部成员'
+                />
+              </div>
+            </>
+          )}
+
+          <div className='space-y-2 md:col-span-2'>
+            <label className='text-sm font-medium'>备注</label>
+            <Textarea
+              value={resource.note}
+              onChange={(event) => updateResource({ note: event.target.value })}
+              className='min-h-20'
+              placeholder='补充说明、使用场景、注意事项'
+            />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
