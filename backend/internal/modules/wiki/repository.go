@@ -216,6 +216,56 @@ func (r *Repository) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+func (r *Repository) CreateAttachment(ctx context.Context, input SaveAttachmentInput) (Attachment, error) {
+	row := r.db.QueryRow(ctx, `
+		INSERT INTO wiki_attachments (
+			id,
+			page_id,
+			original_name,
+			storage_path,
+			content_type,
+			size_bytes,
+			created_by
+		)
+		VALUES (
+			$1,
+			NULLIF($2, ''),
+			$3,
+			$4,
+			$5,
+			$6,
+			NULLIF($7, '')
+		)
+		RETURNING id,
+		          COALESCE(page_id, '') AS page_id,
+		          original_name,
+		          storage_path,
+		          content_type,
+		          size_bytes,
+		          COALESCE(created_by, '') AS created_by,
+		          created_at
+	`, input.ID, input.PageID, input.OriginalName, input.StoragePath, input.ContentType, input.SizeBytes, input.ActorID)
+
+	return scanAttachment(row)
+}
+
+func (r *Repository) GetAttachment(ctx context.Context, id string) (Attachment, error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT id,
+		       COALESCE(page_id, '') AS page_id,
+		       original_name,
+		       storage_path,
+		       content_type,
+		       size_bytes,
+		       COALESCE(created_by, '') AS created_by,
+		       created_at
+		FROM wiki_attachments
+		WHERE id = $1
+	`, id)
+
+	return scanAttachment(row)
+}
+
 func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revision, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id,
@@ -473,6 +523,21 @@ func scanPage(row pageScanner) (Page, error) {
 		&item.UpdatedBy,
 		&item.CreatedAt,
 		&item.UpdatedAt,
+	)
+	return item, err
+}
+
+func scanAttachment(row pageScanner) (Attachment, error) {
+	var item Attachment
+	err := row.Scan(
+		&item.ID,
+		&item.PageID,
+		&item.OriginalName,
+		&item.StoragePath,
+		&item.ContentType,
+		&item.SizeBytes,
+		&item.CreatedBy,
+		&item.CreatedAt,
 	)
 	return item, err
 }

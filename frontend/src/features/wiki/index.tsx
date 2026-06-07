@@ -1,17 +1,22 @@
 import {
+  type ChangeEvent,
+  type ClipboardEvent,
   type Dispatch,
   type DragEvent,
   type SetStateAction,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
+import axios from 'axios'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   createWikiPage,
   deleteWikiPage,
   getWikiPages,
   updateWikiPage,
+  uploadWikiAttachment,
   type SaveWikiPagePayload,
   type SaveWikiResourcePayload,
   type WikiPage,
@@ -29,6 +34,7 @@ import {
   ExternalLink,
   FileText,
   GripVertical,
+  ImagePlus,
   KeyRound,
   Link2,
   Monitor,
@@ -36,6 +42,7 @@ import {
   Plus,
   Save,
   SearchIcon,
+  Table2,
   Trash2,
   Wrench,
   X,
@@ -45,6 +52,11 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -131,6 +143,22 @@ const troubleshootingTemplate = `# 故障标题
 
 ## 后续跟进
 `
+
+function tableTemplate(rows: number, columns: number) {
+  const safeRows = Math.min(Math.max(rows, 1), 20)
+  const safeColumns = Math.min(Math.max(columns, 1), 10)
+  const headers = Array.from(
+    { length: safeColumns },
+    (_, index) => `列 ${index + 1}`
+  )
+  const divider = Array.from({ length: safeColumns }, () => '---')
+  const body = Array.from({ length: safeRows }, () =>
+    Array.from({ length: safeColumns }, () => ' ')
+  )
+  return [headers, divider, ...body]
+    .map((row) => `| ${row.join(' | ')} |`)
+    .join('\n')
+}
 
 function draftID() {
   return Math.random().toString(36).slice(2)
@@ -270,6 +298,27 @@ async function copyValue(value: string, label: string) {
     // Try the toast below after both clipboard paths have failed.
   }
   toast.error('复制失败')
+}
+
+function imageUploadErrorMessage(error: unknown) {
+  if (axios.isAxiosError(error)) {
+    if (error.response?.status === 404) {
+      return '图片上传接口未连接，请启动后端或配置 API 地址'
+    }
+    if (error.response?.status === 401) {
+      return '登录已失效，请重新登录后上传'
+    }
+    if (error.response?.status === 413) {
+      return '图片超过 10MB'
+    }
+    if (error.response?.status === 415) {
+      return '仅支持 png、jpg、gif、webp'
+    }
+    if (!error.response) {
+      return '无法连接到后端上传接口'
+    }
+  }
+  return '图片上传失败'
 }
 
 export function Wiki() {
@@ -518,6 +567,7 @@ export function Wiki() {
               <WikiEditor
                 draft={draft}
                 setDraft={setDraft}
+                pageID={selectedID}
                 isCreating={isCreating}
                 isSaving={isSaving}
                 onCancel={() => {
@@ -723,6 +773,7 @@ function ResourceValue({
 function WikiEditor({
   draft,
   setDraft,
+  pageID,
   isCreating,
   isSaving,
   onCancel,
@@ -730,6 +781,7 @@ function WikiEditor({
 }: {
   draft: DraftWikiPage
   setDraft: Dispatch<SetStateAction<DraftWikiPage>>
+  pageID: string
   isCreating: boolean
   isSaving: boolean
   onCancel: () => void
@@ -738,9 +790,92 @@ function WikiEditor({
   const [collapsedResources, setCollapsedResources] = useState<Set<string>>(
     () => new Set()
   )
+  const [isUploadingImage, setIsUploadingImage] = useState(false)
+  const [tableRows, setTableRows] = useState(3)
+  const [tableColumns, setTableColumns] = useState(3)
+  const [isTablePopoverOpen, setIsTablePopoverOpen] = useState(false)
+  const contentTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   function updateDraft(value: Partial<DraftWikiPage>) {
     setDraft((current) => ({ ...current, ...value }))
+  }
+
+  function insertMarkdownSnippet(snippet: string) {
+    setDraft((current) => {
+      const textarea = contentTextareaRef.current
+      if (!textarea) {
+        return {
+          ...current,
+          content_md: current.content_md
+            ? `${current.content_md}\n\n${snippet}`
+            : snippet,
+        }
+      }
+
+      const start = textarea.selectionStart ?? current.content_md.length
+      const end = textarea.selectionEnd ?? start
+      const before = current.content_md.slice(0, start)
+      const after = current.content_md.slice(end)
+      const prefix = before && !before.endsWith('\n') ? '\n\n' : ''
+      const suffix = after && !after.startsWith('\n') ? '\n\n' : ''
+      const nextContent = `${before}${prefix}${snippet}${suffix}${after}`
+      const nextCursor = before.length + prefix.length + snippet.length
+
+      window.requestAnimationFrame(() => {
+        textarea.focus()
+        textarea.setSelectionRange(nextCursor, nextCursor)
+      })
+
+      return {
+        ...current,
+        content_md: nextContent,
+      }
+    })
+  }
+
+  async function uploadImage(file: File) {
+    if (!file.type.startsWith('image/')) {
+      toast.error('请选择图片文件')
+      return
+    }
+
+    setIsUploadingImage(true)
+    try {
+      const attachment = await uploadWikiAttachment(
+        file,
+        isCreating ? undefined : pageID
+      )
+      insertMarkdownSnippet(attachment.markdown)
+      toast.success('图片已插入')
+    } catch (error) {
+      toast.error(imageUploadErrorMessage(error))
+    } finally {
+      setIsUploadingImage(false)
+    }
+  }
+
+  function insertConfiguredTable() {
+    insertMarkdownSnippet(tableTemplate(tableRows, tableColumns))
+    setIsTablePopoverOpen(false)
+  }
+
+  function handleImageInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file) {
+      void uploadImage(file)
+    }
+  }
+
+  function handleContentPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const image = Array.from(event.clipboardData.files).find((file) =>
+      file.type.startsWith('image/')
+    )
+    if (!image) return
+
+    event.preventDefault()
+    void uploadImage(image)
   }
 
   function addResource(resourceType: WikiResourceType) {
@@ -909,19 +1044,10 @@ function WikiEditor({
                   type='button'
                   variant='outline'
                   size='sm'
-                  onClick={applyRunbookTemplate}
+                  onClick={() => addResource('note')}
                 >
-                  <BookOpen className='size-4' />
-                  手册模板
-                </Button>
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  onClick={applyTroubleshootingTemplate}
-                >
-                  <Wrench className='size-4' />
-                  故障模板
+                  <FileText className='size-4' />
+                  备注
                 </Button>
               </div>
             </div>
@@ -946,12 +1072,109 @@ function WikiEditor({
           </div>
 
           <div className='space-y-2 md:col-span-2'>
-            <label className='text-sm font-medium'>正文 Markdown</label>
+            <div className='sticky top-0 z-20 -mx-5 border-y bg-background/95 px-5 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80'>
+              <div className='flex flex-wrap items-center justify-between gap-2'>
+                <label className='text-sm font-medium'>正文 Markdown</label>
+                <div className='flex flex-wrap gap-2'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={isUploadingImage}
+                    onClick={() => imageInputRef.current?.click()}
+                  >
+                    <ImagePlus className='size-4' />
+                    图片
+                  </Button>
+                  <Popover
+                    open={isTablePopoverOpen}
+                    onOpenChange={setIsTablePopoverOpen}
+                  >
+                    <PopoverTrigger asChild>
+                      <Button type='button' variant='outline' size='sm'>
+                        <Table2 className='size-4' />
+                        表格
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align='end' className='w-72'>
+                      <div className='space-y-4'>
+                        <div>
+                          <div className='text-sm font-medium'>插入表格</div>
+                          <div className='text-xs text-muted-foreground'>
+                            选择正文表格的数据行数和列数。
+                          </div>
+                        </div>
+                        <div className='grid grid-cols-2 gap-3'>
+                          <div className='space-y-2'>
+                            <label className='text-xs font-medium'>行数</label>
+                            <Input
+                              type='number'
+                              min={1}
+                              max={20}
+                              value={tableRows}
+                              onChange={(event) =>
+                                setTableRows(Number(event.target.value) || 1)
+                              }
+                            />
+                          </div>
+                          <div className='space-y-2'>
+                            <label className='text-xs font-medium'>列数</label>
+                            <Input
+                              type='number'
+                              min={1}
+                              max={10}
+                              value={tableColumns}
+                              onChange={(event) =>
+                                setTableColumns(Number(event.target.value) || 1)
+                              }
+                            />
+                          </div>
+                        </div>
+                        <Button
+                          type='button'
+                          className='w-full'
+                          onClick={insertConfiguredTable}
+                        >
+                          插入表格
+                        </Button>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={applyRunbookTemplate}
+                  >
+                    <BookOpen className='size-4' />
+                    手册模板
+                  </Button>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={applyTroubleshootingTemplate}
+                  >
+                    <Wrench className='size-4' />
+                    故障模板
+                  </Button>
+                  <input
+                    ref={imageInputRef}
+                    type='file'
+                    accept='image/png,image/jpeg,image/gif,image/webp'
+                    className='hidden'
+                    onChange={handleImageInputChange}
+                  />
+                </div>
+              </div>
+            </div>
             <Textarea
+              ref={contentTextareaRef}
               value={draft.content_md}
               onChange={(event) =>
                 updateDraft({ content_md: event.target.value })
               }
+              onPaste={handleContentPaste}
               className='min-h-[320px] font-mono text-sm'
               placeholder='# 标题'
             />

@@ -47,6 +47,17 @@ type Resource struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+type Attachment struct {
+	ID           string    `json:"id"`
+	PageID       string    `json:"page_id"`
+	OriginalName string    `json:"original_name"`
+	StoragePath  string    `json:"storage_path"`
+	ContentType  string    `json:"content_type"`
+	SizeBytes    int64     `json:"size_bytes"`
+	CreatedBy    string    `json:"created_by"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 type Revision struct {
 	ID        string    `json:"id"`
 	PageID    string    `json:"page_id"`
@@ -86,4 +97,14 @@ type SaveResourceInput struct {
 	Password     string
 	Note         string
 	SortOrder    int
+}
+
+type SaveAttachmentInput struct {
+	ID           string
+	PageID       string
+	OriginalName string
+	StoragePath  string
+	ContentType  string
+	SizeBytes    int64
+	ActorID      string
 }

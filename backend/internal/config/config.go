@@ -16,6 +16,7 @@ type Config struct {
 	Worker     WorkerConfig
 	Python     PythonConfig
 	Migrations MigrationsConfig
+	Uploads    UploadsConfig
 }
 
 type AppConfig struct {
@@ -66,6 +67,10 @@ type MigrationsConfig struct {
 	Dir string
 }
 
+type UploadsConfig struct {
+	WikiDir string
+}
+
 func Load() Config {
 	return Config{
 		App: AppConfig{
@@ -104,6 +109,9 @@ func Load() Config {
 		},
 		Migrations: MigrationsConfig{
 			Dir: env("MIGRATIONS_DIR", "/migrations"),
+		},
+		Uploads: UploadsConfig{
+			WikiDir: env("WIKI_UPLOADS_DIR", "./uploads/wiki"),
 		},
 	}
 }

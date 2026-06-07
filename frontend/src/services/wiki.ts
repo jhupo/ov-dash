@@ -1,3 +1,4 @@
+import { apiConfig } from '@/config/api'
 import { httpClient } from '@/lib/http-client'
 
 export type WikiPageType =
@@ -54,6 +55,16 @@ export type WikiRevision = {
   resources: WikiResource[]
   created_by: string
   created_at: string
+}
+
+export type WikiAttachment = {
+  id: string
+  page_id: string
+  original_name: string
+  content_type: string
+  size_bytes: number
+  url: string
+  markdown: string
 }
 
 export type SaveWikiResourcePayload = {
@@ -127,4 +138,45 @@ export async function getWikiRevisions(id: string): Promise<WikiRevision[]> {
     `/wiki/pages/${encodeURIComponent(id)}/revisions`
   )
   return response.data.items
+}
+
+export async function uploadWikiAttachment(
+  file: File,
+  pageID?: string
+): Promise<WikiAttachment> {
+  const form = new FormData()
+  form.append('file', file)
+  if (pageID) {
+    form.append('page_id', pageID)
+  }
+
+  const response = await httpClient.post<WikiAttachment>(
+    '/wiki/attachments',
+    form
+  )
+  return resolveWikiAttachment(response.data)
+}
+
+function resolveWikiAttachment(attachment: WikiAttachment): WikiAttachment {
+  const url = resolveAttachmentUrl(attachment.url)
+  return {
+    ...attachment,
+    url,
+    markdown: attachment.markdown.replace(attachment.url, url),
+  }
+}
+
+function resolveAttachmentUrl(url: string) {
+  if (/^https?:\/\//i.test(url)) {
+    return url
+  }
+  if (!/^https?:\/\//i.test(apiConfig.baseURL)) {
+    return url
+  }
+
+  const baseURL = apiConfig.baseURL.replace(/\/+$/, '')
+  if (url.startsWith('/api/v1') && baseURL.endsWith('/api/v1')) {
+    return `${baseURL}${url.slice('/api/v1'.length)}`
+  }
+  return new URL(url, `${baseURL}/`).toString()
 }

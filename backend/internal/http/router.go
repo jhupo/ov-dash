@@ -51,7 +51,10 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 			servers.NewService(serverRepository),
 			servers.NewCollector(serverRepository),
 		)
-		wikiPages := NewWikiHandler(wiki.NewService(wiki.NewRepository(runtime.DB)))
+		wikiPages := NewWikiHandler(
+			wiki.NewService(wiki.NewRepository(runtime.DB)),
+			runtime.Config.Uploads.WikiDir,
+		)
 
 		r.Get("/health", health.Readiness)
 		r.Post("/auth/login", authHandler.Login)
@@ -78,6 +81,8 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 			r.Put("/wiki/pages/{id}", wikiPages.UpdatePage)
 			r.Delete("/wiki/pages/{id}", wikiPages.DeletePage)
 			r.Get("/wiki/pages/{id}/revisions", wikiPages.ListRevisions)
+			r.Post("/wiki/attachments", wikiPages.UploadAttachment)
+			r.Get("/wiki/attachments/{id}/raw", wikiPages.AttachmentRaw)
 			r.Get("/proxy-settings", proxySettings.Get)
 			r.Put("/proxy-settings", proxySettings.Update)
 			r.Get("/telegram-notifications/settings", telegramNotifications.GetSettings)

@@ -11,6 +11,7 @@ import (
 var (
 	ErrTitleRequired = errors.New("wiki page title is required")
 	ErrIDRequired    = errors.New("wiki page id is required")
+	ErrFileRequired  = errors.New("wiki attachment file is required")
 )
 
 type Service struct {
@@ -73,6 +74,36 @@ func (s *Service) ListRevisions(ctx context.Context, pageID string) ([]Revision,
 		return nil, ErrIDRequired
 	}
 	return s.repository.ListRevisions(ctx, pageID)
+}
+
+func (s *Service) CreateAttachment(ctx context.Context, input SaveAttachmentInput) (Attachment, error) {
+	var err error
+	input.ID = strings.TrimSpace(input.ID)
+	input.PageID = strings.TrimSpace(input.PageID)
+	input.OriginalName = strings.TrimSpace(input.OriginalName)
+	input.StoragePath = strings.TrimSpace(input.StoragePath)
+	input.ContentType = strings.TrimSpace(input.ContentType)
+	input.ActorID = strings.TrimSpace(input.ActorID)
+
+	if input.ID == "" {
+		input.ID, err = randomID()
+		if err != nil {
+			return Attachment{}, err
+		}
+	}
+	if input.StoragePath == "" {
+		return Attachment{}, ErrFileRequired
+	}
+
+	return s.repository.CreateAttachment(ctx, input)
+}
+
+func (s *Service) GetAttachment(ctx context.Context, id string) (Attachment, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Attachment{}, ErrIDRequired
+	}
+	return s.repository.GetAttachment(ctx, id)
 }
 
 func normalizeInput(input SavePageInput) (SavePageInput, error) {
