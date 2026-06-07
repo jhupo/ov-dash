@@ -6,7 +6,7 @@ This deployment scaffold runs:
 - Go worker from `backend/cmd/worker`
 - PostgreSQL 16 with persistent storage
 - Redis 7 with AOF persistence and password auth
-- shadcn-admin frontend built from `frontend/` and served by nginx
+- shadcn-admin frontend served by nginx
 
 ## Files
 
@@ -25,7 +25,9 @@ Use the test host address as the deployment target and enter credentials manuall
 cd /opt/ov-dash
 cp .env.example .env
 vi .env
-docker compose --env-file .env up -d --build
+docker login ghcr.io
+docker compose --env-file .env pull
+docker compose --env-file .env up -d --no-build
 ```
 
 Open `http://192.168.2.17` after the stack is healthy.
@@ -41,7 +43,7 @@ sudo sh deploy/scripts/install-docker-ubuntu.sh
 ```sh
 make env
 make compose-config
-make compose-build
+make compose-pull
 make compose-up
 make compose-up-backend
 make compose-logs
@@ -49,7 +51,7 @@ make compose-ps
 make backup-db
 ```
 
-`compose-up` starts the full stack. `compose-up-backend` starts PostgreSQL, Redis, API, and worker only.
+`compose-up` starts the full stack from release images. `compose-up-backend` starts PostgreSQL, Redis, API, and worker only. Use `make compose-build` and `make compose-up-build` only for local builds with `docker-compose.build.yml`.
 
 ## Security defaults
 

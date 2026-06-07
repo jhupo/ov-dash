@@ -1,21 +1,5 @@
 name: ov-dash
 
-x-backend-build: &backend-build
-  context: .
-  dockerfile: deploy/docker/backend.Dockerfile
-  args:
-    GO_VERSION: ${GO_VERSION:-1.23}
-    GO_IMAGE: ${GO_IMAGE:-docker.1ms.run/library/golang:1.23-alpine}
-    RUNTIME_IMAGE: ${RUNTIME_IMAGE:-docker.m.daocloud.io/library/alpine:3.20}
-    APK_REPOSITORY: ${APK_REPOSITORY:-https://mirrors.aliyun.com/alpine}
-    GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
-    GOSUMDB: ${GOSUMDB:-sum.golang.google.cn}
-    APP_VERSION: ${APP_VERSION:-local}
-    HTTP_PROXY: ${HTTP_PROXY:-}
-    HTTPS_PROXY: ${HTTPS_PROXY:-}
-    ALL_PROXY: ${ALL_PROXY:-}
-    NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres,redis,api,worker,frontend}
-
 x-backend-env: &backend-env
   APP_NAME: ${APP_NAME:-ov-dash}
   APP_ENV: ${APP_ENV:-production}
@@ -97,8 +81,7 @@ services:
       - ov_dash
 
   api:
-    image: ${BACKEND_IMAGE:-ov-dash-backend:${APP_VERSION:-local}}
-    build: *backend-build
+    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:latest}
     command: ["/app/api"]
     user: "0:0"
     restart: unless-stopped
@@ -128,8 +111,7 @@ services:
       - ov_dash
 
   worker:
-    image: ${BACKEND_IMAGE:-ov-dash-backend:${APP_VERSION:-local}}
-    build: *backend-build
+    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:latest}
     command: ["/app/worker"]
     restart: unless-stopped
     env_file:
@@ -145,17 +127,7 @@ services:
       - ov_dash
 
   frontend:
-    image: ${FRONTEND_IMAGE:-ov-dash-frontend:${APP_VERSION:-local}}
-    build:
-      context: .
-      dockerfile: deploy/docker/frontend.Dockerfile
-      args:
-        NODE_VERSION: ${NODE_VERSION:-22}
-        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-alpine}
-        NGINX_IMAGE: ${NGINX_IMAGE:-docker.1ms.run/library/nginx:1.27-alpine}
-        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
-        VITE_ENABLE_DEVTOOLS: ${VITE_ENABLE_DEVTOOLS:-false}
+    image: ${FRONTEND_IMAGE:-ghcr.io/jhupo/ov-dash-frontend:latest}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-80}:80"

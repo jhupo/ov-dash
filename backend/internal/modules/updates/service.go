@@ -337,7 +337,7 @@ fi
 
 if [ %s = true ]; then
   write_status running 镜像拉取失败，正在本机构建 65
-  if docker compose --env-file .env build api worker frontend; then
+  if docker compose -f docker-compose.yml -f docker-compose.build.yml --env-file .env build api worker frontend; then
     write_status ready 更新已准备完成 90
     exit 0
   fi
@@ -367,7 +367,7 @@ func (s *Service) localVersion(ctx context.Context) (string, string) {
 		commit = ""
 	}
 	commit = strings.TrimSpace(commit)
-	if version == "" || version == "local" {
+	if version == "" || version == "local" || version == "latest" {
 		if tag, err := s.gitOutput(ctx, "describe", "--tags", "--exact-match"); err == nil {
 			version = strings.TrimSpace(tag)
 		}
