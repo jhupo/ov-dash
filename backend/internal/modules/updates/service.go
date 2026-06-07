@@ -301,7 +301,7 @@ write_status() {
   message="$2"
   progress="$3"
   ended=""
-  if [ "$status" != "running" ]; then ended=", \"endedAt\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ\")\"; fi
+  if [ "$status" != "running" ]; then ended=", \"endedAt\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ\")\""; fi
   printf '{"startedAt":"%s"%%s,"version":"%s","status":"%%s","message":"%%s","progress":%%s}\n' "$ended" "$status" "$(printf '%%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')" "$progress" > %s
 }
 set_env() {
