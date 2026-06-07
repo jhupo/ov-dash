@@ -1,5 +1,6 @@
 import {
   Bell,
+  BookOpen,
   LayoutDashboard,
   ListTodo,
   HelpCircle,
@@ -40,6 +41,11 @@ export const sidebarData: SidebarData = {
           title: '用户',
           url: '/users',
           icon: Users,
+        },
+        {
+          title: '资料库',
+          url: '/wiki',
+          icon: BookOpen,
         },
       ],
     },
