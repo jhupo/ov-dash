@@ -275,6 +275,8 @@ func (s *Service) startUpdater(ctx context.Context, version string) error {
 		"-v",
 		"/root/.netrc:/root/.netrc:ro",
 		"-v",
+		"/root/.docker:/root/.docker:ro",
+		"-v",
 		"/var/run/docker.sock:/var/run/docker.sock",
 		"-w",
 		s.cfg.Update.WorkDir,
@@ -301,8 +303,9 @@ write_status() {
   message="$2"
   progress="$3"
   ended=""
-  if [ "$status" != "running" ]; then ended=", \"endedAt\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ\")\""; fi
-  printf '{"startedAt":"%s"%%s,"version":"%s","status":"%%s","message":"%%s","progress":%%s}\n' "$ended" "$status" "$(printf '%%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')" "$progress" > %s
+  if [ "$status" != "running" ]; then ended=',"endedAt":"'"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"'"'; fi
+  escaped_message="$(printf '%%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  printf '{"startedAt":"%s"%%s,"version":"%s","status":"%%s","message":"%%s","progress":%%s}\n' "$ended" "$status" "$escaped_message" "$progress" > %s
 }
 set_env() {
   key="$1"
