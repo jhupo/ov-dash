@@ -324,17 +324,6 @@ function UserTelegramSettingsTable({
     Record<string, { enabled: boolean; chatId: string }>
   >({})
 
-  useEffect(() => {
-    const next: Record<string, { enabled: boolean; chatId: string }> = {}
-    for (const item of items) {
-      next[item.user_id] = {
-        enabled: item.enabled,
-        chatId: item.chat_id,
-      }
-    }
-    setDrafts(next)
-  }, [items])
-
   const mutation = useMutation({
     mutationFn: ({
       userId,
@@ -349,9 +338,14 @@ function UserTelegramSettingsTable({
         enabled,
         chat_id: chatId,
       }),
-    onSuccess: async () => {
+    onSuccess: async (_, variables) => {
       await queryClient.invalidateQueries({
         queryKey: ['telegram-notifications', 'users'],
+      })
+      setDrafts((current) => {
+        const next = { ...current }
+        delete next[variables.userId]
+        return next
       })
       toast.success('用户 Telegram 映射已保存')
     },
@@ -364,11 +358,12 @@ function UserTelegramSettingsTable({
     userId: string,
     value: Partial<{ enabled: boolean; chatId: string }>
   ) {
+    const source = items.find((item) => item.user_id === userId)
     setDrafts((current) => ({
       ...current,
       [userId]: {
-        enabled: current[userId]?.enabled ?? false,
-        chatId: current[userId]?.chatId ?? '',
+        enabled: current[userId]?.enabled ?? source?.enabled ?? false,
+        chatId: current[userId]?.chatId ?? source?.chat_id ?? '',
         ...value,
       },
     }))

@@ -4,7 +4,6 @@ import {
   type Dispatch,
   type DragEvent,
   type SetStateAction,
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -81,16 +80,35 @@ type DraftWikiPage = Omit<SaveWikiPagePayload, 'resources'> & {
   resources: DraftWikiResource[]
 }
 
+const pageTypeIcons: Record<WikiPageType, typeof FileText> = {
+  document: FileText,
+  machine: Monitor,
+  link: Link2,
+  runbook: BookOpen,
+  troubleshooting: Wrench,
+}
+
+const resourceTypeIcons: Record<WikiResourceType, typeof FileText> = {
+  machine: Monitor,
+  link: Link2,
+  credential: KeyRound,
+  note: FileText,
+}
+
 const pageTypeOptions: {
   label: string
   value: WikiPageType
   icon: typeof FileText
 }[] = [
-  { label: '文档', value: 'document', icon: FileText },
-  { label: '机器', value: 'machine', icon: Monitor },
-  { label: '链接', value: 'link', icon: Link2 },
-  { label: '手册', value: 'runbook', icon: BookOpen },
-  { label: '故障', value: 'troubleshooting', icon: Wrench },
+  { label: '文档', value: 'document', icon: pageTypeIcons.document },
+  { label: '机器', value: 'machine', icon: pageTypeIcons.machine },
+  { label: '链接', value: 'link', icon: pageTypeIcons.link },
+  { label: '手册', value: 'runbook', icon: pageTypeIcons.runbook },
+  {
+    label: '故障',
+    value: 'troubleshooting',
+    icon: pageTypeIcons.troubleshooting,
+  },
 ]
 
 const resourceTypeOptions: {
@@ -98,10 +116,10 @@ const resourceTypeOptions: {
   value: WikiResourceType
   icon: typeof FileText
 }[] = [
-  { label: '机器信息', value: 'machine', icon: Monitor },
-  { label: '链接', value: 'link', icon: Link2 },
-  { label: '账号密码', value: 'credential', icon: KeyRound },
-  { label: '备注', value: 'note', icon: FileText },
+  { label: '机器信息', value: 'machine', icon: resourceTypeIcons.machine },
+  { label: '链接', value: 'link', icon: resourceTypeIcons.link },
+  { label: '账号密码', value: 'credential', icon: resourceTypeIcons.credential },
+  { label: '备注', value: 'note', icon: resourceTypeIcons.note },
 ]
 
 const categoryOptions = [
@@ -221,20 +239,32 @@ function pageTypeLabel(value: WikiPageType) {
   return pageTypeOptions.find((item) => item.value === value)?.label ?? '文档'
 }
 
-function pageTypeIcon(value: WikiPageType) {
-  return pageTypeOptions.find((item) => item.value === value)?.icon ?? FileText
-}
-
 function resourceTypeLabel(value: WikiResourceType) {
   return (
     resourceTypeOptions.find((item) => item.value === value)?.label ?? '资源'
   )
 }
 
-function resourceTypeIcon(value: WikiResourceType) {
-  return (
-    resourceTypeOptions.find((item) => item.value === value)?.icon ?? FileText
-  )
+function PageTypeIcon({
+  value,
+  className,
+}: {
+  value: WikiPageType
+  className?: string
+}) {
+  const Icon = pageTypeIcons[value] ?? FileText
+  return <Icon className={className} />
+}
+
+function ResourceTypeIcon({
+  value,
+  className,
+}: {
+  value: WikiResourceType
+  className?: string
+}) {
+  const Icon = resourceTypeIcons[value] ?? FileText
+  return <Icon className={className} />
 }
 
 function normalizeDraft(draft: DraftWikiPage): SaveWikiPagePayload {
@@ -334,21 +364,15 @@ export function Wiki() {
     queryFn: getWikiPages,
   })
 
-  const pages = pagesQuery.data ?? []
-  const selectedPage = pages.find((page) => page.id === selectedID)
-
-  useEffect(() => {
-    if (!selectedID && pages.length > 0 && !isCreating) {
-      setSelectedID(pages[0].id)
+  const pages = useMemo(() => pagesQuery.data ?? [], [pagesQuery.data])
+  const activePageID = useMemo(() => {
+    if (isCreating) return ''
+    if (selectedID && pages.some((page) => page.id === selectedID)) {
+      return selectedID
     }
+    return pages[0]?.id ?? ''
   }, [isCreating, pages, selectedID])
-
-  useEffect(() => {
-    if (selectedPage && !isCreating) {
-      setDraft(draftFromPage(selectedPage))
-      setIsEditing(false)
-    }
-  }, [isCreating, selectedPage])
+  const selectedPage = pages.find((page) => page.id === activePageID)
 
   const filteredPages = useMemo(() => {
     const keyword = searchValue.trim().toLowerCase()
@@ -390,6 +414,7 @@ export function Wiki() {
     onSuccess: async (page) => {
       await queryClient.invalidateQueries({ queryKey: ['wiki', 'pages'] })
       setSelectedID(page.id)
+      setDraft(draftFromPage(page))
       setIsCreating(false)
       setIsEditing(false)
       toast.success('资料已创建')
@@ -408,6 +433,7 @@ export function Wiki() {
     onSuccess: async (page) => {
       await queryClient.invalidateQueries({ queryKey: ['wiki', 'pages'] })
       setSelectedID(page.id)
+      setDraft(draftFromPage(page))
       setIsEditing(false)
       toast.success('资料已保存')
     },
@@ -523,7 +549,6 @@ export function Wiki() {
                   </div>
                   <div className='space-y-1'>
                     {items.map((page) => {
-                      const Icon = pageTypeIcon(page.page_type)
                       const summary =
                         page.summary ||
                         page.resources?.[0]?.title ||
@@ -535,16 +560,21 @@ export function Wiki() {
                           type='button'
                           onClick={() => {
                             setSelectedID(page.id)
+                            setDraft(draftFromPage(page))
+                            setIsEditing(false)
                             setIsCreating(false)
                           }}
                           className={cn(
                             'flex w-full items-start gap-2 rounded-md px-2 py-2 text-start text-sm transition-colors hover:bg-muted',
-                            selectedID === page.id &&
+                            activePageID === page.id &&
                               !isCreating &&
                               'bg-muted text-foreground'
                           )}
                         >
-                          <Icon className='mt-0.5 size-4 shrink-0 text-muted-foreground' />
+                          <PageTypeIcon
+                            value={page.page_type}
+                            className='mt-0.5 size-4 shrink-0 text-muted-foreground'
+                          />
                           <span className='min-w-0 flex-1'>
                             <span className='block truncate font-medium'>
                               {page.title}
@@ -567,7 +597,7 @@ export function Wiki() {
               <WikiEditor
                 draft={draft}
                 setDraft={setDraft}
-                pageID={selectedID}
+                pageID={activePageID}
                 isCreating={isCreating}
                 isSaving={isSaving}
                 onCancel={() => {
@@ -585,7 +615,11 @@ export function Wiki() {
             ) : selectedPage ? (
               <WikiPageView
                 page={selectedPage}
-                onEdit={() => setIsEditing(true)}
+                onEdit={() => {
+                  setDraft(draftFromPage(selectedPage))
+                  setIsCreating(false)
+                  setIsEditing(true)
+                }}
                 onDelete={removeSelectedPage}
                 deleting={deleteMutation.isPending}
               />
@@ -612,7 +646,6 @@ function WikiPageView({
   onDelete: () => void
   deleting: boolean
 }) {
-  const Icon = pageTypeIcon(page.page_type)
   const groupedResources = resourceTypeOptions
     .map((option) => ({
       ...option,
@@ -628,7 +661,7 @@ function WikiPageView({
         <div className='min-w-0 space-y-2'>
           <div className='flex flex-wrap items-center gap-2'>
             <Badge variant='secondary'>
-              <Icon className='size-3' />
+              <PageTypeIcon value={page.page_type} className='size-3' />
               {pageTypeLabel(page.page_type)}
             </Badge>
             <Badge variant='outline'>{page.category}</Badge>
@@ -697,13 +730,14 @@ function WikiPageView({
 }
 
 function ResourceCard({ resource }: { resource: WikiResource }) {
-  const Icon = resourceTypeIcon(resource.resource_type)
-
   return (
     <div className='space-y-3 rounded-md border p-3 text-sm'>
       <div className='flex items-start justify-between gap-2'>
         <div className='flex min-w-0 items-center gap-2 font-medium'>
-          <Icon className='size-4 shrink-0' />
+          <ResourceTypeIcon
+            value={resource.resource_type}
+            className='size-4 shrink-0'
+          />
           <span className='truncate'>{resource.title}</span>
         </div>
         {resource.url && (
@@ -1200,7 +1234,6 @@ function ResourceEditorCard({
   setDraft: Dispatch<SetStateAction<DraftWikiPage>>
   onToggleCollapse: () => void
 }) {
-  const Icon = resourceTypeIcon(resource.resource_type)
   const summary = [
     resource.title,
     resource.host,
@@ -1325,7 +1358,10 @@ function ResourceEditorCard({
           >
             <GripVertical className='size-4' />
           </div>
-          <Icon className='size-4 shrink-0' />
+          <ResourceTypeIcon
+            value={resource.resource_type}
+            className='size-4 shrink-0'
+          />
           <div className='min-w-0'>
             <div className='truncate text-sm font-medium'>
               {resourceTypeLabel(resource.resource_type)} {index + 1}
