@@ -19,19 +19,28 @@ func NewWikiHandler(service *wiki.Service) *WikiHandler {
 	return &WikiHandler{service: service}
 }
 
+type saveWikiResourceRequest struct {
+	ID           string `json:"id"`
+	ResourceType string `json:"resource_type"`
+	Title        string `json:"title"`
+	Host         string `json:"host"`
+	Port         string `json:"port"`
+	URL          string `json:"url"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	Note         string `json:"note"`
+	SortOrder    int    `json:"sort_order"`
+}
+
 type saveWikiPageRequest struct {
-	ParentID        string `json:"parent_id"`
-	Title           string `json:"title"`
-	PageType        string `json:"page_type"`
-	Category        string `json:"category"`
-	Summary         string `json:"summary"`
-	ContentMD       string `json:"content_md"`
-	LinkLabel       string `json:"link_label"`
-	LinkURL         string `json:"link_url"`
-	MachineHost     string `json:"machine_host"`
-	MachinePort     string `json:"machine_port"`
-	MachineUsername string `json:"machine_username"`
-	Tags            string `json:"tags"`
+	ParentID  string                    `json:"parent_id"`
+	Title     string                    `json:"title"`
+	PageType  string                    `json:"page_type"`
+	Category  string                    `json:"category"`
+	Summary   string                    `json:"summary"`
+	ContentMD string                    `json:"content_md"`
+	Tags      string                    `json:"tags"`
+	Resources []saveWikiResourceRequest `json:"resources"`
 }
 
 func (h *WikiHandler) ListPages(w http.ResponseWriter, r *http.Request) {
@@ -109,20 +118,32 @@ func (h *WikiHandler) saveInputFromRequest(w http.ResponseWriter, r *http.Reques
 		return wiki.SavePageInput{}, false
 	}
 
+	resources := make([]wiki.SaveResourceInput, 0, len(payload.Resources))
+	for _, resource := range payload.Resources {
+		resources = append(resources, wiki.SaveResourceInput{
+			ID:           resource.ID,
+			ResourceType: resource.ResourceType,
+			Title:        resource.Title,
+			Host:         resource.Host,
+			Port:         resource.Port,
+			URL:          resource.URL,
+			Username:     resource.Username,
+			Password:     resource.Password,
+			Note:         resource.Note,
+			SortOrder:    resource.SortOrder,
+		})
+	}
+
 	return wiki.SavePageInput{
-		ParentID:        payload.ParentID,
-		Title:           payload.Title,
-		PageType:        payload.PageType,
-		Category:        payload.Category,
-		Summary:         payload.Summary,
-		ContentMD:       payload.ContentMD,
-		LinkLabel:       payload.LinkLabel,
-		LinkURL:         payload.LinkURL,
-		MachineHost:     payload.MachineHost,
-		MachinePort:     payload.MachinePort,
-		MachineUsername: payload.MachineUsername,
-		Tags:            payload.Tags,
-		ActorID:         user.ID,
+		ParentID:  payload.ParentID,
+		Title:     payload.Title,
+		PageType:  payload.PageType,
+		Category:  payload.Category,
+		Summary:   payload.Summary,
+		ContentMD: payload.ContentMD,
+		Tags:      payload.Tags,
+		Resources: resources,
+		ActorID:   user.ID,
 	}, true
 }
 

@@ -26,11 +26,6 @@ func (r *Repository) List(ctx context.Context) ([]Page, error) {
 		       category,
 		       summary,
 		       content_md,
-		       link_label,
-		       link_url,
-		       machine_host,
-		       machine_port,
-		       machine_username,
 		       tags,
 		       COALESCE(created_by, '') AS created_by,
 		       COALESCE(updated_by, '') AS updated_by,
@@ -52,7 +47,16 @@ func (r *Repository) List(ctx context.Context) ([]Page, error) {
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	resources, err := r.listResources(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	attachResources(items, resources)
+	return items, nil
 }
 
 func (r *Repository) Get(ctx context.Context, id string) (Page, error) {
@@ -64,11 +68,6 @@ func (r *Repository) Get(ctx context.Context, id string) (Page, error) {
 		       category,
 		       summary,
 		       content_md,
-		       link_label,
-		       link_url,
-		       machine_host,
-		       machine_port,
-		       machine_username,
 		       tags,
 		       COALESCE(created_by, '') AS created_by,
 		       COALESCE(updated_by, '') AS updated_by,
@@ -77,11 +76,25 @@ func (r *Repository) Get(ctx context.Context, id string) (Page, error) {
 		FROM wiki_pages
 		WHERE id = $1
 	`, id)
-	return scanPage(row)
+	page, err := scanPage(row)
+	if err != nil {
+		return Page{}, err
+	}
+	page.Resources, err = r.listResources(ctx, page.ID)
+	if err != nil {
+		return Page{}, err
+	}
+	return page, nil
 }
 
 func (r *Repository) Create(ctx context.Context, input SavePageInput) (Page, error) {
-	row := r.db.QueryRow(ctx, `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Page{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO wiki_pages (
 			id,
 			parent_id,
@@ -90,11 +103,6 @@ func (r *Repository) Create(ctx context.Context, input SavePageInput) (Page, err
 			category,
 			summary,
 			content_md,
-			link_label,
-			link_url,
-			machine_host,
-			machine_port,
-			machine_username,
 			tags,
 			created_by,
 			updated_by
@@ -108,13 +116,8 @@ func (r *Repository) Create(ctx context.Context, input SavePageInput) (Page, err
 			$6,
 			$7,
 			$8,
-			$9,
-			$10,
-			$11,
-			$12,
-			$13,
-			NULLIF($14, ''),
-			NULLIF($14, '')
+			NULLIF($9, ''),
+			NULLIF($9, '')
 		)
 		RETURNING id,
 		          COALESCE(parent_id, '') AS parent_id,
@@ -123,27 +126,42 @@ func (r *Repository) Create(ctx context.Context, input SavePageInput) (Page, err
 		          category,
 		          summary,
 		          content_md,
-		          link_label,
-		          link_url,
-		          machine_host,
-		          machine_port,
-		          machine_username,
 		          tags,
 		          COALESCE(created_by, '') AS created_by,
 		          COALESCE(updated_by, '') AS updated_by,
 		          created_at,
 		          updated_at
-	`, input.ID, input.ParentID, input.Title, input.PageType, input.Category, input.Summary, input.ContentMD, input.LinkLabel, input.LinkURL, input.MachineHost, input.MachinePort, input.MachineUsername, input.Tags, input.ActorID)
+	`, input.ID, input.ParentID, input.Title, input.PageType, input.Category, input.Summary, input.ContentMD, input.Tags, input.ActorID)
 
 	page, err := scanPage(row)
 	if err != nil {
 		return Page{}, err
 	}
-	return page, r.insertRevision(ctx, page, input.ActorID)
+	if err := r.replaceResources(ctx, tx, page.ID, input.Resources); err != nil {
+		return Page{}, err
+	}
+	if err := r.insertRevision(ctx, tx, page, input.ActorID); err != nil {
+		return Page{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Page{}, err
+	}
+
+	page.Resources, err = r.listResources(ctx, page.ID)
+	if err != nil {
+		return Page{}, err
+	}
+	return page, nil
 }
 
 func (r *Repository) Update(ctx context.Context, input SavePageInput) (Page, error) {
-	row := r.db.QueryRow(ctx, `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Page{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		UPDATE wiki_pages
 		SET parent_id = NULLIF($2, ''),
 		    title = $3,
@@ -151,13 +169,8 @@ func (r *Repository) Update(ctx context.Context, input SavePageInput) (Page, err
 		    category = $5,
 		    summary = $6,
 		    content_md = $7,
-		    link_label = $8,
-		    link_url = $9,
-		    machine_host = $10,
-		    machine_port = $11,
-		    machine_username = $12,
-		    tags = $13,
-		    updated_by = NULLIF($14, ''),
+		    tags = $8,
+		    updated_by = NULLIF($9, ''),
 		    updated_at = now()
 		WHERE id = $1
 		RETURNING id,
@@ -167,23 +180,32 @@ func (r *Repository) Update(ctx context.Context, input SavePageInput) (Page, err
 		          category,
 		          summary,
 		          content_md,
-		          link_label,
-		          link_url,
-		          machine_host,
-		          machine_port,
-		          machine_username,
 		          tags,
 		          COALESCE(created_by, '') AS created_by,
 		          COALESCE(updated_by, '') AS updated_by,
 		          created_at,
 		          updated_at
-	`, input.ID, input.ParentID, input.Title, input.PageType, input.Category, input.Summary, input.ContentMD, input.LinkLabel, input.LinkURL, input.MachineHost, input.MachinePort, input.MachineUsername, input.Tags, input.ActorID)
+	`, input.ID, input.ParentID, input.Title, input.PageType, input.Category, input.Summary, input.ContentMD, input.Tags, input.ActorID)
 
 	page, err := scanPage(row)
 	if err != nil {
 		return Page{}, err
 	}
-	return page, r.insertRevision(ctx, page, input.ActorID)
+	if err := r.replaceResources(ctx, tx, page.ID, input.Resources); err != nil {
+		return Page{}, err
+	}
+	if err := r.insertRevision(ctx, tx, page, input.ActorID); err != nil {
+		return Page{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Page{}, err
+	}
+
+	page.Resources, err = r.listResources(ctx, page.ID)
+	if err != nil {
+		return Page{}, err
+	}
+	return page, nil
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
@@ -201,11 +223,6 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 		       category,
 		       summary,
 		       content_md,
-		       link_label,
-		       link_url,
-		       machine_host,
-		       machine_port,
-		       machine_username,
 		       tags,
 		       COALESCE(created_by, '') AS created_by,
 		       created_at
@@ -230,11 +247,6 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 			&item.Category,
 			&item.Summary,
 			&item.ContentMD,
-			&item.LinkLabel,
-			&item.LinkURL,
-			&item.MachineHost,
-			&item.MachinePort,
-			&item.MachineUsername,
 			&item.Tags,
 			&item.CreatedBy,
 			&item.CreatedAt,
@@ -246,13 +258,111 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 	return items, rows.Err()
 }
 
-func (r *Repository) insertRevision(ctx context.Context, page Page, actorID string) error {
+func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID string, resources []SaveResourceInput) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM wiki_page_resources WHERE page_id = $1`, pageID); err != nil {
+		return err
+	}
+
+	for index, resource := range resources {
+		resourceID := resource.ID
+		if resourceID == "" {
+			id, err := randomID()
+			if err != nil {
+				return err
+			}
+			resourceID = id
+		}
+		sortOrder := resource.SortOrder
+		if sortOrder == 0 {
+			sortOrder = index + 1
+		}
+
+		_, err := tx.Exec(ctx, `
+			INSERT INTO wiki_page_resources (
+				id,
+				page_id,
+				resource_type,
+				title,
+				host,
+				port,
+				url,
+				username,
+				password,
+				note,
+				sort_order
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, resourceID, pageID, resource.ResourceType, resource.Title, resource.Host, resource.Port, resource.URL, resource.Username, resource.Password, resource.Note, sortOrder)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *Repository) listResources(ctx context.Context, pageID string) ([]Resource, error) {
+	query := `
+		SELECT id,
+		       page_id,
+		       resource_type,
+		       title,
+		       host,
+		       port,
+		       url,
+		       username,
+		       password,
+		       note,
+		       sort_order,
+		       created_at,
+		       updated_at
+		FROM wiki_page_resources
+	`
+	args := []any{}
+	if pageID != "" {
+		query += ` WHERE page_id = $1`
+		args = append(args, pageID)
+	}
+	query += ` ORDER BY page_id ASC, sort_order ASC, title ASC`
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]Resource, 0)
+	for rows.Next() {
+		var item Resource
+		if err := rows.Scan(
+			&item.ID,
+			&item.PageID,
+			&item.ResourceType,
+			&item.Title,
+			&item.Host,
+			&item.Port,
+			&item.URL,
+			&item.Username,
+			&item.Password,
+			&item.Note,
+			&item.SortOrder,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) insertRevision(ctx context.Context, tx pgx.Tx, page Page, actorID string) error {
 	revisionID, err := randomID()
 	if err != nil {
 		return err
 	}
 
-	_, err = r.db.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO wiki_page_revisions (
 			id,
 			page_id,
@@ -262,11 +372,6 @@ func (r *Repository) insertRevision(ctx context.Context, page Page, actorID stri
 			category,
 			summary,
 			content_md,
-			link_label,
-			link_url,
-			machine_host,
-			machine_port,
-			machine_username,
 			tags,
 			created_by
 		)
@@ -280,15 +385,20 @@ func (r *Repository) insertRevision(ctx context.Context, page Page, actorID stri
 			$6,
 			$7,
 			$8,
-			$9,
-			$10,
-			$11,
-			$12,
-			$13,
-			NULLIF($14, '')
+			NULLIF($9, '')
 		)
-	`, revisionID, page.ID, page.Title, page.PageType, page.Category, page.Summary, page.ContentMD, page.LinkLabel, page.LinkURL, page.MachineHost, page.MachinePort, page.MachineUsername, page.Tags, actorID)
+	`, revisionID, page.ID, page.Title, page.PageType, page.Category, page.Summary, page.ContentMD, page.Tags, actorID)
 	return err
+}
+
+func attachResources(pages []Page, resources []Resource) {
+	byPage := make(map[string][]Resource)
+	for _, resource := range resources {
+		byPage[resource.PageID] = append(byPage[resource.PageID], resource)
+	}
+	for index := range pages {
+		pages[index].Resources = byPage[pages[index].ID]
+	}
 }
 
 func IsNotFound(err error) bool {
@@ -309,11 +419,6 @@ func scanPage(row pageScanner) (Page, error) {
 		&item.Category,
 		&item.Summary,
 		&item.ContentMD,
-		&item.LinkLabel,
-		&item.LinkURL,
-		&item.MachineHost,
-		&item.MachinePort,
-		&item.MachineUsername,
 		&item.Tags,
 		&item.CreatedBy,
 		&item.UpdatedBy,

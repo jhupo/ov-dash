@@ -81,11 +81,6 @@ func normalizeInput(input SavePageInput) (SavePageInput, error) {
 	input.PageType = strings.TrimSpace(input.PageType)
 	input.Category = strings.TrimSpace(input.Category)
 	input.Summary = strings.TrimSpace(input.Summary)
-	input.LinkLabel = strings.TrimSpace(input.LinkLabel)
-	input.LinkURL = strings.TrimSpace(input.LinkURL)
-	input.MachineHost = strings.TrimSpace(input.MachineHost)
-	input.MachinePort = strings.TrimSpace(input.MachinePort)
-	input.MachineUsername = strings.TrimSpace(input.MachineUsername)
 	input.Tags = strings.TrimSpace(input.Tags)
 	input.ActorID = strings.TrimSpace(input.ActorID)
 
@@ -101,7 +96,67 @@ func normalizeInput(input SavePageInput) (SavePageInput, error) {
 	if input.Category == "" {
 		input.Category = "资料库"
 	}
+
+	resources := make([]SaveResourceInput, 0, len(input.Resources))
+	for index, resource := range input.Resources {
+		resource.ID = strings.TrimSpace(resource.ID)
+		resource.ResourceType = strings.TrimSpace(resource.ResourceType)
+		resource.Title = strings.TrimSpace(resource.Title)
+		resource.Host = strings.TrimSpace(resource.Host)
+		resource.Port = strings.TrimSpace(resource.Port)
+		resource.URL = strings.TrimSpace(resource.URL)
+		resource.Username = strings.TrimSpace(resource.Username)
+		resource.Password = strings.TrimSpace(resource.Password)
+		resource.Note = strings.TrimSpace(resource.Note)
+		if !isSupportedResourceType(resource.ResourceType) {
+			resource.ResourceType = ResourceTypeNote
+		}
+		if emptyResource(resource) {
+			continue
+		}
+		if resource.Title == "" {
+			resource.Title = defaultResourceTitle(resource)
+		}
+		if resource.SortOrder == 0 {
+			resource.SortOrder = index + 1
+		}
+		resources = append(resources, resource)
+	}
+	input.Resources = resources
+
 	return input, nil
+}
+
+func emptyResource(resource SaveResourceInput) bool {
+	return resource.Title == "" &&
+		resource.Host == "" &&
+		resource.Port == "" &&
+		resource.URL == "" &&
+		resource.Username == "" &&
+		resource.Password == "" &&
+		resource.Note == ""
+}
+
+func defaultResourceTitle(resource SaveResourceInput) string {
+	switch resource.ResourceType {
+	case ResourceTypeMachine:
+		if resource.Host != "" {
+			return resource.Host
+		}
+		return "机器信息"
+	case ResourceTypeLink:
+		if resource.URL != "" {
+			return resource.URL
+		}
+		return "链接"
+	case ResourceTypeCredential:
+		if resource.Username != "" {
+			return resource.Username
+		}
+		return "账号密码"
+	default:
+		return "备注"
+	}
 }
 
 func isSupportedPageType(pageType string) bool {
@@ -111,6 +166,18 @@ func isSupportedPageType(pageType string) bool {
 		PageTypeLink,
 		PageTypeRunbook,
 		PageTypeTroubleshooting:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedResourceType(resourceType string) bool {
+	switch resourceType {
+	case ResourceTypeMachine,
+		ResourceTypeLink,
+		ResourceTypeCredential,
+		ResourceTypeNote:
 		return true
 	default:
 		return false

@@ -8,8 +8,10 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen,
+  Copy,
   ExternalLink,
   FileText,
+  KeyRound,
   Link2,
   Monitor,
   Pencil,
@@ -18,6 +20,7 @@ import {
   SearchIcon,
   Trash2,
   Wrench,
+  X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -28,8 +31,11 @@ import {
   getWikiPages,
   updateWikiPage,
   type SaveWikiPagePayload,
+  type SaveWikiResourcePayload,
   type WikiPage,
   type WikiPageType,
+  type WikiResource,
+  type WikiResourceType,
 } from '@/services/wiki'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -49,18 +55,74 @@ import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
 
-type DraftWikiPage = SaveWikiPagePayload
+type DraftWikiResource = SaveWikiResourcePayload & {
+  draft_id: string
+}
 
-const pageTypeOptions: { label: string; value: WikiPageType; icon: typeof FileText }[] =
-  [
-    { label: '文档', value: 'document', icon: FileText },
-    { label: '机器', value: 'machine', icon: Monitor },
-    { label: '链接', value: 'link', icon: Link2 },
-    { label: '手册', value: 'runbook', icon: BookOpen },
-    { label: '故障', value: 'troubleshooting', icon: Wrench },
-  ]
+type DraftWikiPage = Omit<SaveWikiPagePayload, 'resources'> & {
+  resources: DraftWikiResource[]
+}
+
+const pageTypeOptions: {
+  label: string
+  value: WikiPageType
+  icon: typeof FileText
+}[] = [
+  { label: '文档', value: 'document', icon: FileText },
+  { label: '机器', value: 'machine', icon: Monitor },
+  { label: '链接', value: 'link', icon: Link2 },
+  { label: '手册', value: 'runbook', icon: BookOpen },
+  { label: '故障', value: 'troubleshooting', icon: Wrench },
+]
+
+const resourceTypeOptions: {
+  label: string
+  value: WikiResourceType
+  icon: typeof FileText
+}[] = [
+  { label: '机器信息', value: 'machine', icon: Monitor },
+  { label: '链接', value: 'link', icon: Link2 },
+  { label: '账号密码', value: 'credential', icon: KeyRound },
+  { label: '备注', value: 'note', icon: FileText },
+]
 
 const categoryOptions = ['机器信息', '操作手册', '故障排查', '外部链接', '账号资料']
+
+const runbookTemplate = `# 操作手册标题
+
+## 适用场景
+
+## 前置条件
+
+## 操作步骤
+
+1. 待补充
+
+## 验证方式
+
+## 回滚方案
+`
+
+const troubleshootingTemplate = `# 故障标题
+
+## 现象
+
+## 影响范围
+
+## 原因
+
+## 处理步骤
+
+1. 待补充
+
+## 验证方式
+
+## 后续跟进
+`
+
+function draftID() {
+  return Math.random().toString(36).slice(2)
+}
 
 function emptyDraft(): DraftWikiPage {
   return {
@@ -70,12 +132,23 @@ function emptyDraft(): DraftWikiPage {
     category: '机器信息',
     summary: '',
     content_md: '',
-    link_label: '',
-    link_url: '',
-    machine_host: '',
-    machine_port: '',
-    machine_username: '',
     tags: '',
+    resources: [],
+  }
+}
+
+function emptyResource(resourceType: WikiResourceType): DraftWikiResource {
+  return {
+    draft_id: draftID(),
+    resource_type: resourceType,
+    title: '',
+    host: '',
+    port: resourceType === 'machine' ? '22' : '',
+    url: resourceType === 'link' ? 'https://' : '',
+    username: '',
+    password: '',
+    note: '',
+    sort_order: 0,
   }
 }
 
@@ -87,12 +160,20 @@ function draftFromPage(page: WikiPage): DraftWikiPage {
     category: page.category,
     summary: page.summary,
     content_md: page.content_md,
-    link_label: page.link_label,
-    link_url: page.link_url,
-    machine_host: page.machine_host,
-    machine_port: page.machine_port,
-    machine_username: page.machine_username,
     tags: page.tags,
+    resources: (page.resources ?? []).map((resource) => ({
+      draft_id: resource.id || draftID(),
+      id: resource.id,
+      resource_type: resource.resource_type,
+      title: resource.title,
+      host: resource.host,
+      port: resource.port,
+      url: resource.url,
+      username: resource.username,
+      password: resource.password,
+      note: resource.note,
+      sort_order: resource.sort_order,
+    })),
   }
 }
 
@@ -104,6 +185,18 @@ function pageTypeIcon(value: WikiPageType) {
   return pageTypeOptions.find((item) => item.value === value)?.icon ?? FileText
 }
 
+function resourceTypeLabel(value: WikiResourceType) {
+  return (
+    resourceTypeOptions.find((item) => item.value === value)?.label ?? '资源'
+  )
+}
+
+function resourceTypeIcon(value: WikiResourceType) {
+  return (
+    resourceTypeOptions.find((item) => item.value === value)?.icon ?? FileText
+  )
+}
+
 function normalizeDraft(draft: DraftWikiPage): SaveWikiPagePayload {
   return {
     parent_id: draft.parent_id?.trim() || '',
@@ -112,13 +205,59 @@ function normalizeDraft(draft: DraftWikiPage): SaveWikiPagePayload {
     category: draft.category.trim() || '资料库',
     summary: draft.summary.trim(),
     content_md: draft.content_md,
-    link_label: draft.link_label.trim(),
-    link_url: draft.link_url.trim(),
-    machine_host: draft.machine_host.trim(),
-    machine_port: draft.machine_port.trim(),
-    machine_username: draft.machine_username.trim(),
     tags: draft.tags.trim(),
+    resources: draft.resources.map((resource, index) => ({
+      id: resource.id,
+      resource_type: resource.resource_type,
+      title: resource.title.trim(),
+      host: resource.host.trim(),
+      port: resource.port.trim(),
+      url: resource.url.trim(),
+      username: resource.username.trim(),
+      password: resource.password.trim(),
+      note: resource.note.trim(),
+      sort_order: index + 1,
+    })),
   }
+}
+
+function copyValueFallback(value: string) {
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '-9999px'
+  textarea.style.opacity = '0'
+
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+
+  try {
+    return document.execCommand('copy')
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+async function copyValue(value: string, label: string) {
+  if (!value) return
+  try {
+    const copied = copyValueFallback(value)
+    if (copied) {
+      toast.success(`${label}已复制`)
+      return
+    }
+
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      toast.success(`${label}已复制`)
+      return
+    }
+  } catch {
+    // Try the toast below after both clipboard paths have failed.
+  }
+  toast.error('复制失败')
 }
 
 export function Wiki() {
@@ -160,9 +299,15 @@ export function Wiki() {
         page.category,
         page.summary,
         page.content_md,
-        page.machine_host,
-        page.link_url,
         page.tags,
+        ...(page.resources ?? []).flatMap((resource) => [
+          resource.title,
+          resource.host,
+          resource.url,
+          resource.username,
+          resource.password,
+          resource.note,
+        ]),
       ]
         .join(' ')
         .toLowerCase()
@@ -216,7 +361,13 @@ export function Wiki() {
   })
 
   function startCreate(pageType: WikiPageType = 'document') {
-    setDraft({ ...emptyDraft(), page_type: pageType })
+    const nextDraft = { ...emptyDraft(), page_type: pageType }
+    if (pageType === 'machine') {
+      nextDraft.resources = [
+        { ...emptyResource('machine'), title: '机器信息' },
+      ]
+    }
+    setDraft(nextDraft)
     setSelectedID('')
     setIsCreating(true)
     setIsEditing(true)
@@ -309,6 +460,11 @@ export function Wiki() {
                   <div className='space-y-1'>
                     {items.map((page) => {
                       const Icon = pageTypeIcon(page.page_type)
+                      const summary =
+                        page.summary ||
+                        page.resources?.[0]?.title ||
+                        page.tags ||
+                        page.content_md
                       return (
                         <button
                           key={page.id}
@@ -330,7 +486,7 @@ export function Wiki() {
                               {page.title}
                             </span>
                             <span className='line-clamp-2 text-xs text-muted-foreground'>
-                              {page.summary || page.tags || page.machine_host}
+                              {summary}
                             </span>
                           </span>
                         </button>
@@ -392,6 +548,14 @@ function WikiPageView({
   deleting: boolean
 }) {
   const Icon = pageTypeIcon(page.page_type)
+  const groupedResources = resourceTypeOptions
+    .map((option) => ({
+      ...option,
+      items: (page.resources ?? []).filter(
+        (resource) => resource.resource_type === option.value
+      ),
+    }))
+    .filter((group) => group.items.length > 0)
 
   return (
     <div className='flex h-full min-h-0 flex-col'>
@@ -434,40 +598,24 @@ function WikiPageView({
       </div>
 
       <div className='min-h-0 flex-1 overflow-y-auto p-5'>
-        {(page.machine_host || page.link_url) && (
-          <div className='mb-5 grid gap-3 md:grid-cols-2'>
-            {page.machine_host && (
-              <div className='rounded-md border p-3 text-sm'>
-                <div className='mb-2 flex items-center gap-2 font-medium'>
-                  <Monitor className='size-4' />
-                  机器信息
+        {groupedResources.length > 0 && (
+          <div className='mb-6 space-y-5'>
+            {groupedResources.map((group) => {
+              const GroupIcon = group.icon
+              return (
+                <div key={group.value} className='space-y-2'>
+                  <div className='flex items-center gap-2 text-sm font-medium'>
+                    <GroupIcon className='size-4' />
+                    {group.label}
+                  </div>
+                  <div className='grid gap-3 md:grid-cols-2'>
+                    {group.items.map((resource) => (
+                      <ResourceCard key={resource.id} resource={resource} />
+                    ))}
+                  </div>
                 </div>
-                <div className='grid gap-1 text-muted-foreground'>
-                  <div>地址：{page.machine_host}</div>
-                  {page.machine_port && <div>端口：{page.machine_port}</div>}
-                  {page.machine_username && (
-                    <div>用户：{page.machine_username}</div>
-                  )}
-                </div>
-              </div>
-            )}
-            {page.link_url && (
-              <div className='rounded-md border p-3 text-sm'>
-                <div className='mb-2 flex items-center gap-2 font-medium'>
-                  <Link2 className='size-4' />
-                  关联链接
-                </div>
-                <a
-                  className='inline-flex items-center gap-1 break-all text-primary underline underline-offset-4'
-                  href={page.link_url}
-                  target='_blank'
-                  rel='noreferrer'
-                >
-                  {page.link_label || page.link_url}
-                  <ExternalLink className='size-3.5 shrink-0' />
-                </a>
-              </div>
-            )}
+              )
+            })}
           </div>
         )}
 
@@ -479,6 +627,80 @@ function WikiPageView({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function ResourceCard({ resource }: { resource: WikiResource }) {
+  const Icon = resourceTypeIcon(resource.resource_type)
+
+  return (
+    <div className='space-y-3 rounded-md border p-3 text-sm'>
+      <div className='flex items-start justify-between gap-2'>
+        <div className='flex min-w-0 items-center gap-2 font-medium'>
+          <Icon className='size-4 shrink-0' />
+          <span className='truncate'>{resource.title}</span>
+        </div>
+        {resource.url && (
+          <a
+            href={resource.url}
+            target='_blank'
+            rel='noreferrer'
+            className='inline-flex shrink-0 items-center gap-1 text-xs text-primary underline underline-offset-4'
+          >
+            打开
+            <ExternalLink className='size-3' />
+          </a>
+        )}
+      </div>
+
+      <div className='space-y-1.5 text-muted-foreground'>
+        {resource.host && <ResourceValue label='地址' value={resource.host} />}
+        {resource.port && <ResourceValue label='端口' value={resource.port} />}
+        {resource.url && <ResourceValue label='链接' value={resource.url} />}
+        {resource.username && (
+          <ResourceValue label='用户' value={resource.username} />
+        )}
+        {resource.password && (
+          <ResourceValue label='密码' value={resource.password} sensitive />
+        )}
+        {resource.note && <div className='pt-1'>{resource.note}</div>}
+      </div>
+    </div>
+  )
+}
+
+function ResourceValue({
+  label,
+  value,
+  sensitive,
+}: {
+  label: string
+  value: string
+  sensitive?: boolean
+}) {
+  return (
+    <div className='flex items-center justify-between gap-3'>
+      <div className='min-w-0'>
+        <span>{label}：</span>
+        <span
+          className={cn(
+            'break-all text-foreground',
+            sensitive && 'font-mono text-xs'
+          )}
+        >
+          {value}
+        </span>
+      </div>
+      <Button
+        type='button'
+        variant='ghost'
+        size='icon'
+        className='size-7 shrink-0'
+        onClick={() => copyValue(value, label)}
+      >
+        <Copy className='size-3.5' />
+      </Button>
     </div>
   )
 }
@@ -500,6 +722,35 @@ function WikiEditor({
 }) {
   function updateDraft(value: Partial<DraftWikiPage>) {
     setDraft((current) => ({ ...current, ...value }))
+  }
+
+  function addResource(resourceType: WikiResourceType) {
+    setDraft((current) => ({
+      ...current,
+      resources: [...current.resources, emptyResource(resourceType)],
+    }))
+  }
+
+  function applyRunbookTemplate() {
+    setDraft((current) => ({
+      ...current,
+      page_type: 'runbook',
+      category: '操作手册',
+      content_md: current.content_md.trim()
+        ? `${current.content_md}\n\n${runbookTemplate}`
+        : runbookTemplate,
+    }))
+  }
+
+  function applyTroubleshootingTemplate() {
+    setDraft((current) => ({
+      ...current,
+      page_type: 'troubleshooting',
+      category: '故障排查',
+      content_md: current.content_md.trim()
+        ? `${current.content_md}\n\n${troubleshootingTemplate}`
+        : troubleshootingTemplate,
+    }))
   }
 
   return (
@@ -578,58 +829,6 @@ function WikiEditor({
             />
           </div>
 
-          <div className='space-y-2'>
-            <label className='text-sm font-medium'>机器地址</label>
-            <Input
-              value={draft.machine_host}
-              onChange={(event) =>
-                updateDraft({ machine_host: event.target.value })
-              }
-              placeholder='例如 10.0.0.12'
-            />
-          </div>
-          <div className='grid gap-4 sm:grid-cols-2'>
-            <div className='space-y-2'>
-              <label className='text-sm font-medium'>端口</label>
-              <Input
-                value={draft.machine_port}
-                onChange={(event) =>
-                  updateDraft({ machine_port: event.target.value })
-                }
-                placeholder='22'
-              />
-            </div>
-            <div className='space-y-2'>
-              <label className='text-sm font-medium'>用户</label>
-              <Input
-                value={draft.machine_username}
-                onChange={(event) =>
-                  updateDraft({ machine_username: event.target.value })
-                }
-                placeholder='root'
-              />
-            </div>
-          </div>
-
-          <div className='space-y-2'>
-            <label className='text-sm font-medium'>链接名称</label>
-            <Input
-              value={draft.link_label}
-              onChange={(event) =>
-                updateDraft({ link_label: event.target.value })
-              }
-              placeholder='例如 Grafana 面板'
-            />
-          </div>
-          <div className='space-y-2'>
-            <label className='text-sm font-medium'>链接地址</label>
-            <Input
-              value={draft.link_url}
-              onChange={(event) => updateDraft({ link_url: event.target.value })}
-              placeholder='https://'
-            />
-          </div>
-
           <div className='space-y-2 md:col-span-2'>
             <label className='text-sm font-medium'>标签</label>
             <Input
@@ -637,6 +836,77 @@ function WikiEditor({
               onChange={(event) => updateDraft({ tags: event.target.value })}
               placeholder='例如 prod,postgres,backup'
             />
+          </div>
+
+          <div className='space-y-3 rounded-md border p-3 md:col-span-2'>
+            <div className='flex flex-wrap items-center justify-between gap-2'>
+              <div>
+                <div className='text-sm font-medium'>快捷添加</div>
+                <div className='text-xs text-muted-foreground'>
+                  需要机器、链接或账号密码时再添加资源块。
+                </div>
+              </div>
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={() => addResource('machine')}
+                >
+                  <Monitor className='size-4' />
+                  机器信息
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={() => addResource('link')}
+                >
+                  <Link2 className='size-4' />
+                  链接
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={() => addResource('credential')}
+                >
+                  <KeyRound className='size-4' />
+                  账号密码
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={applyRunbookTemplate}
+                >
+                  <BookOpen className='size-4' />
+                  手册模板
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={applyTroubleshootingTemplate}
+                >
+                  <Wrench className='size-4' />
+                  故障模板
+                </Button>
+              </div>
+            </div>
+
+            {draft.resources.length > 0 && (
+              <div className='space-y-3'>
+                {draft.resources.map((resource, index) => (
+                  <ResourceEditorCard
+                    key={resource.draft_id}
+                    index={index}
+                    resource={resource}
+                    setDraft={setDraft}
+                  />
+                ))}
+              </div>
+            )}
           </div>
 
           <div className='space-y-2 md:col-span-2'>
@@ -650,6 +920,158 @@ function WikiEditor({
               placeholder='# 标题'
             />
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ResourceEditorCard({
+  index,
+  resource,
+  setDraft,
+}: {
+  index: number
+  resource: DraftWikiResource
+  setDraft: Dispatch<SetStateAction<DraftWikiPage>>
+}) {
+  const Icon = resourceTypeIcon(resource.resource_type)
+
+  function updateResource(value: Partial<DraftWikiResource>) {
+    setDraft((current) => ({
+      ...current,
+      resources: current.resources.map((item) =>
+        item.draft_id === resource.draft_id ? { ...item, ...value } : item
+      ),
+    }))
+  }
+
+  function removeResource() {
+    setDraft((current) => ({
+      ...current,
+      resources: current.resources.filter(
+        (item) => item.draft_id !== resource.draft_id
+      ),
+    }))
+  }
+
+  return (
+    <div className='rounded-md border bg-muted/20 p-3'>
+      <div className='mb-3 flex items-center justify-between gap-2'>
+        <div className='flex items-center gap-2 text-sm font-medium'>
+          <Icon className='size-4' />
+          {resourceTypeLabel(resource.resource_type)} {index + 1}
+        </div>
+        <Button
+          type='button'
+          variant='ghost'
+          size='icon'
+          className='size-8'
+          onClick={removeResource}
+        >
+          <X className='size-4' />
+        </Button>
+      </div>
+
+      <div className='grid gap-3 md:grid-cols-2'>
+        <div className='space-y-2'>
+          <label className='text-sm font-medium'>资源类型</label>
+          <Select
+            value={resource.resource_type}
+            onValueChange={(value) =>
+              updateResource({ resource_type: value as WikiResourceType })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {resourceTypeOptions.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className='space-y-2'>
+          <label className='text-sm font-medium'>名称</label>
+          <Input
+            value={resource.title}
+            onChange={(event) => updateResource({ title: event.target.value })}
+            placeholder='例如 主库 / Grafana / 管理后台'
+          />
+        </div>
+
+        {resource.resource_type === 'machine' && (
+          <>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium'>机器地址</label>
+              <Input
+                value={resource.host}
+                onChange={(event) =>
+                  updateResource({ host: event.target.value })
+                }
+                placeholder='例如 10.0.0.12'
+              />
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium'>端口</label>
+              <Input
+                value={resource.port}
+                onChange={(event) =>
+                  updateResource({ port: event.target.value })
+                }
+                placeholder='22'
+              />
+            </div>
+          </>
+        )}
+
+        {resource.resource_type === 'link' && (
+          <div className='space-y-2 md:col-span-2'>
+            <label className='text-sm font-medium'>链接地址</label>
+            <Input
+              value={resource.url}
+              onChange={(event) => updateResource({ url: event.target.value })}
+              placeholder='https://'
+            />
+          </div>
+        )}
+
+        {resource.resource_type !== 'note' && (
+          <>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium'>登录用户</label>
+              <Input
+                value={resource.username}
+                onChange={(event) =>
+                  updateResource({ username: event.target.value })
+                }
+                placeholder='root / admin'
+              />
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium'>登录密码</label>
+              <Input
+                value={resource.password}
+                onChange={(event) =>
+                  updateResource({ password: event.target.value })
+                }
+                placeholder='直接显示给内部成员'
+              />
+            </div>
+          </>
+        )}
+
+        <div className='space-y-2 md:col-span-2'>
+          <label className='text-sm font-medium'>备注</label>
+          <Textarea
+            value={resource.note}
+            onChange={(event) => updateResource({ note: event.target.value })}
+            className='min-h-20'
+            placeholder='补充说明、使用场景、注意事项'
+          />
         </div>
       </div>
     </div>

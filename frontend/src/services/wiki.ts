@@ -7,6 +7,24 @@ export type WikiPageType =
   | 'runbook'
   | 'troubleshooting'
 
+export type WikiResourceType = 'machine' | 'link' | 'credential' | 'note'
+
+export type WikiResource = {
+  id: string
+  page_id: string
+  resource_type: WikiResourceType
+  title: string
+  host: string
+  port: string
+  url: string
+  username: string
+  password: string
+  note: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
 export type WikiPage = {
   id: string
   parent_id: string
@@ -15,12 +33,8 @@ export type WikiPage = {
   category: string
   summary: string
   content_md: string
-  link_label: string
-  link_url: string
-  machine_host: string
-  machine_port: string
-  machine_username: string
   tags: string
+  resources: WikiResource[]
   created_by: string
   updated_by: string
   created_at: string
@@ -36,14 +50,22 @@ export type WikiRevision = {
   category: string
   summary: string
   content_md: string
-  link_label: string
-  link_url: string
-  machine_host: string
-  machine_port: string
-  machine_username: string
   tags: string
   created_by: string
   created_at: string
+}
+
+export type SaveWikiResourcePayload = {
+  id?: string
+  resource_type: WikiResourceType
+  title: string
+  host: string
+  port: string
+  url: string
+  username: string
+  password: string
+  note: string
+  sort_order: number
 }
 
 export type SaveWikiPagePayload = {
@@ -53,12 +75,8 @@ export type SaveWikiPagePayload = {
   category: string
   summary: string
   content_md: string
-  link_label: string
-  link_url: string
-  machine_host: string
-  machine_port: string
-  machine_username: string
   tags: string
+  resources: SaveWikiResourcePayload[]
 }
 
 type WikiPagesResponse = {
