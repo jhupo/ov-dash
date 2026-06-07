@@ -1,4 +1,10 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
@@ -372,8 +378,15 @@ function ServerTerminalDialog({
   const [statusMessage, setStatusMessage] = useState('')
   const socketRef = useRef<WebSocket | null>(null)
   const terminalElementRef = useRef<HTMLDivElement | null>(null)
+  const [terminalMountKey, setTerminalMountKey] = useState(0)
   const terminalRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const handleTerminalElement = useCallback((element: HTMLDivElement | null) => {
+    terminalElementRef.current = element
+    if (element) {
+      setTerminalMountKey((value) => value + 1)
+    }
+  }, [])
 
   useEffect(() => {
     if (!server) return
@@ -415,8 +428,11 @@ function ServerTerminalDialog({
     terminal.writeln(`正在连接 ${activeServer.connection_hint} ...`)
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
-    setStatus('connecting')
-    setStatusMessage('正在建立 WebSSH 连接')
+    const statusTimer = window.setTimeout(() => {
+      if (disposed) return
+      setStatus('connecting')
+      setStatusMessage('正在建立 WebSSH 连接')
+    }, 0)
     const fitTimers = [0, 80, 180].map((delay) =>
       window.setTimeout(() => {
         fitTerminal()
@@ -512,6 +528,7 @@ function ServerTerminalDialog({
 
     return () => {
       disposed = true
+      window.clearTimeout(statusTimer)
       fitTimers.forEach((timer) => window.clearTimeout(timer))
       resizeObserver.disconnect()
       resizeDisposable.dispose()
@@ -530,7 +547,7 @@ function ServerTerminalDialog({
         // xterm cannot measure hidden containers during dialog transitions.
       }
     }
-  }, [server])
+  }, [server, terminalMountKey])
 
   function focusTerminal() {
     terminalRef.current?.focus()
@@ -554,7 +571,7 @@ function ServerTerminalDialog({
             </div>
           )}
           <div
-            ref={terminalElementRef}
+            ref={handleTerminalElement}
             aria-label='SSH 终端'
             onClick={focusTerminal}
             className='h-[min(68vh,640px)] min-h-[420px] overflow-hidden rounded-md border bg-[#050816] p-2 text-[#d8f3ff] shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_.xterm]:h-full [&_.xterm-helpers]:opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:bg-transparent!'
