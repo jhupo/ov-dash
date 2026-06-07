@@ -2,6 +2,8 @@ package servers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +25,13 @@ type Module struct{}
 type Handler struct {
 	service   *Service
 	collector *Collector
+	cache     cacheStore
+}
+
+type cacheStore interface {
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key string, value string, ttl time.Duration) error
+	Delete(ctx context.Context, keys ...string) error
 }
 
 type saveServerConnectionRequest struct {
@@ -58,6 +67,7 @@ func (Module) RegisterRoutes(ctx platformmodule.Context) {
 	handler := &Handler{
 		service:   NewService(repository),
 		collector: NewCollector(repository),
+		cache:     ctx.Cache,
 	}
 	writeServers := ctx.RequireCapability(capability.ServersWrite)
 	deleteServers := ctx.RequireCapability(capability.ServersDelete)
@@ -70,7 +80,8 @@ func (Module) RegisterRoutes(ctx platformmodule.Context) {
 	ctx.ProtectedRouter.With(writeServers).Put("/server-connections/{id}", handler.Save)
 	ctx.ProtectedRouter.With(writeServers).Post("/server-connections/{id}/agent/update", handler.UpdateAgent)
 	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/command", handler.RunCommand)
-	ctx.ProtectedRouter.With(sshServers).Get("/server-connections/{id}/ssh/ws", handler.Shell)
+	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/ticket", handler.IssueShellTicket)
+	ctx.PublicRouter.Get("/server-connections/{id}/ssh/ws", handler.Shell)
 	ctx.ProtectedRouter.With(deleteServers).Delete("/server-connections/{id}", handler.Delete)
 }
 
@@ -193,7 +204,39 @@ func (h *Handler) RunCommand(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"output": output})
 }
 
+func (h *Handler) IssueShellTicket(w http.ResponseWriter, r *http.Request) {
+	if h.cache == nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_store_unavailable"})
+		return
+	}
+	serverID := chi.URLParam(r, "id")
+	if serverID == "" {
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_server_id"})
+		return
+	}
+	ticket, err := randomTicket()
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_create_failed"})
+		return
+	}
+	expiresIn := 30 * time.Second
+	if err := h.cache.Set(r.Context(), shellTicketKey(ticket), serverID, expiresIn); err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_store_failed"})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"ticket":     ticket,
+		"expires_at": time.Now().Add(expiresIn),
+	})
+}
+
 func (h *Handler) Shell(w http.ResponseWriter, r *http.Request) {
+	serverID := chi.URLParam(r, "id")
+	if err := h.consumeShellTicket(r.Context(), serverID, r.URL.Query().Get("ticket")); err != nil {
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+
 	ws, err := upgradeWebSocket(w, r)
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "websocket_upgrade_failed"})
@@ -204,7 +247,7 @@ func (h *Handler) Shell(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	client, session, err := h.collector.Shell(ctx, chi.URLParam(r, "id"))
+	client, session, err := h.collector.Shell(ctx, serverID)
 	if err != nil {
 		_ = ws.writeText("connect failed: " + err.Error() + "\r\n")
 		return
@@ -278,6 +321,38 @@ func (h *Handler) Shell(w http.ResponseWriter, r *http.Request) {
 	case <-ctx.Done():
 	case <-done:
 	}
+}
+
+func (h *Handler) consumeShellTicket(ctx context.Context, serverID string, ticket string) error {
+	if h.cache == nil {
+		return errors.New("ssh_ticket_store_unavailable")
+	}
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return errors.New("missing_ssh_ticket")
+	}
+	key := shellTicketKey(ticket)
+	storedServerID, err := h.cache.Get(ctx, key)
+	if err != nil {
+		return errors.New("invalid_ssh_ticket")
+	}
+	_ = h.cache.Delete(ctx, key)
+	if storedServerID != serverID {
+		return errors.New("invalid_ssh_ticket")
+	}
+	return nil
+}
+
+func shellTicketKey(ticket string) string {
+	return "servers:ssh-ticket:" + ticket
+}
+
+func randomTicket() (string, error) {
+	buffer := make([]byte, 32)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buffer), nil
 }
 
 func handleTerminalResize(session *ssh.Session, text string) (bool, error) {

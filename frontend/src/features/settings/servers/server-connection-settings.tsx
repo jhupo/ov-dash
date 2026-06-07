@@ -24,6 +24,7 @@ import { toast } from 'sonner'
 import {
   deleteServerConnection,
   listServerConnections,
+  requestServerShellTicket,
   saveServerConnection,
   touchServerMonitor,
   updateServerAgent,
@@ -376,6 +377,7 @@ function ServerTerminalDialog({
 
   useEffect(() => {
     if (!server) return
+    const activeServer = server
     const element = terminalElementRef.current
     if (!element) return
 
@@ -410,7 +412,7 @@ function ServerTerminalDialog({
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
     terminal.open(element)
-    terminal.writeln(`正在连接 ${server.connection_hint} ...`)
+    terminal.writeln(`正在连接 ${activeServer.connection_hint} ...`)
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
     setStatus('connecting')
@@ -423,69 +425,88 @@ function ServerTerminalDialog({
       }, delay)
     )
 
-    const socket = new WebSocket(buildWebSSHUrl(server.id))
-    socketRef.current = socket
-
     const dataDisposable = terminal.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) {
+      const socket = socketRef.current
+      if (socket?.readyState === WebSocket.OPEN) {
         socket.send(data)
       }
     })
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
-      sendTerminalResize(socket, cols, rows)
+      const socket = socketRef.current
+      if (socket) sendTerminalResize(socket, cols, rows)
     })
     const resizeObserver = new ResizeObserver(() => fitTerminal())
     resizeObserver.observe(element)
 
-    socket.onopen = () => {
-      setStatus('open')
-      setStatusMessage('已连接，正在等待远端 Shell 输出')
-      terminal.writeln('WebSSH 已连接，正在等待远端 Shell 输出...')
-      fitTerminal()
-      sendTerminalResize(socket, terminal.cols, terminal.rows)
-      window.setTimeout(() => terminal.focus(), 0)
-    }
-    socket.onmessage = (event) => {
-      const message = String(event.data)
-      if (!message) return
-      setStatus('active')
-      setStatusMessage('已连接')
-      terminal.write(message)
-      if (
-        message.includes('连接失败') ||
-        message.includes('connect failed') ||
-        message.includes('打开输入失败') ||
-        message.includes('open stdin failed') ||
-        message.includes('打开输出失败') ||
-        message.includes('open stdout failed') ||
-        message.includes('打开错误输出失败') ||
-        message.includes('open stderr failed') ||
-        message.includes('启动 Shell 失败') ||
-        message.includes('start shell failed')
-      ) {
+    void connect()
+
+    async function connect() {
+      try {
+        const { ticket } = await requestServerShellTicket(activeServer.id)
+        if (disposed) return
+        const socket = new WebSocket(buildWebSSHUrl(activeServer.id, ticket))
+        socketRef.current = socket
+
+        socket.onopen = () => {
+          setStatus('open')
+          setStatusMessage('已连接，正在等待远端 Shell 输出')
+          terminal.writeln('WebSSH 已连接，正在等待远端 Shell 输出...')
+          fitTerminal()
+          sendTerminalResize(socket, terminal.cols, terminal.rows)
+          window.setTimeout(() => terminal.focus(), 0)
+        }
+        socket.onmessage = (event) => {
+          const message = String(event.data)
+          if (!message) return
+          setStatus('active')
+          setStatusMessage('已连接')
+          terminal.write(message)
+          if (
+            message.includes('连接失败') ||
+            message.includes('connect failed') ||
+            message.includes('打开输入失败') ||
+            message.includes('open stdin failed') ||
+            message.includes('打开输出失败') ||
+            message.includes('open stdout failed') ||
+            message.includes('打开错误输出失败') ||
+            message.includes('open stderr failed') ||
+            message.includes('启动 Shell 失败') ||
+            message.includes('start shell failed')
+          ) {
+            failed = true
+            setStatus('error')
+            setStatusMessage(message.trim())
+            toast.error(message.trim())
+          }
+        }
+        socket.onerror = () => {
+          const message =
+            'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
+          failed = true
+          setStatus('error')
+          setStatusMessage(message)
+          terminal.writeln('')
+          terminal.writeln(message)
+          toast.error(message)
+        }
+        socket.onclose = (event) => {
+          if (disposed) return
+          if (!failed) {
+            setStatus('closed')
+            setStatusMessage(
+              event.wasClean ? '连接已关闭' : `连接已断开 (${event.code})`
+            )
+          }
+        }
+      } catch {
+        if (disposed) return
+        const message = 'WebSSH 授权失败，请重新登录后再试。'
         failed = true
         setStatus('error')
-        setStatusMessage(message.trim())
-        toast.error(message.trim())
-      }
-    }
-    socket.onerror = () => {
-      const message =
-        'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
-      failed = true
-      setStatus('error')
-      setStatusMessage(message)
-      terminal.writeln('')
-      terminal.writeln(message)
-      toast.error(message)
-    }
-    socket.onclose = (event) => {
-      if (disposed) return
-      if (!failed) {
-        setStatus('closed')
-        setStatusMessage(
-          event.wasClean ? '连接已关闭' : `连接已断开 (${event.code})`
-        )
+        setStatusMessage(message)
+        terminal.writeln('')
+        terminal.writeln(message)
+        toast.error(message)
       }
     }
 
@@ -495,7 +516,7 @@ function ServerTerminalDialog({
       resizeObserver.disconnect()
       resizeDisposable.dispose()
       dataDisposable.dispose()
-      socket.close()
+      socketRef.current?.close()
       socketRef.current = null
       fitAddonRef.current = null
       terminalRef.current = null
@@ -544,11 +565,11 @@ function ServerTerminalDialog({
   )
 }
 
-function buildWebSSHUrl(id: string) {
+function buildWebSSHUrl(id: string, ticket: string) {
   const base = new URL(apiConfig.baseURL, window.location.origin)
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
   base.pathname = `${base.pathname.replace(/\/$/, '')}/server-connections/${id}/ssh/ws`
-  base.search = ''
+  base.searchParams.set('ticket', ticket)
   return base.toString()
 }
 

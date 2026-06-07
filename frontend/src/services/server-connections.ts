@@ -102,6 +102,15 @@ export async function updateServerAgent(id: string): Promise<void> {
   await httpClient.post(`/server-connections/${id}/agent/update`)
 }
 
+export async function requestServerShellTicket(
+  id: string
+): Promise<{ ticket: string; expires_at: string }> {
+  const response = await httpClient.post<{ ticket: string; expires_at: string }>(
+    `/server-connections/${id}/ssh/ticket`
+  )
+  return response.data
+}
+
 export async function touchServerMonitor(): Promise<void> {
   await httpClient.post('/server-connections/monitor/touch')
 }
