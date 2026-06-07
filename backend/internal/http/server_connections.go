@@ -6,12 +6,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"ov-dash/backend/internal/modules/servers"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/crypto/ssh"
 )
 
 type ServerConnectionsHandler struct {
@@ -230,6 +232,12 @@ func (h *ServerConnectionsHandler) Shell(w http.ResponseWriter, r *http.Request)
 			if text == "" {
 				continue
 			}
+			if handled, err := handleTerminalResize(session, text); handled {
+				if err != nil {
+					_ = ws.writeText("调整终端尺寸失败: " + err.Error() + "\r\n")
+				}
+				continue
+			}
 			if _, err := io.WriteString(stdin, text); err != nil {
 				cancel()
 				return
@@ -241,6 +249,31 @@ func (h *ServerConnectionsHandler) Shell(w http.ResponseWriter, r *http.Request)
 	case <-ctx.Done():
 	case <-done:
 	}
+}
+
+func handleTerminalResize(session *ssh.Session, text string) (bool, error) {
+	const prefix = "\x1b]ovdash-resize;"
+	const suffix = "\x07"
+	if !strings.HasPrefix(text, prefix) || !strings.HasSuffix(text, suffix) {
+		return false, nil
+	}
+	size := strings.TrimSuffix(strings.TrimPrefix(text, prefix), suffix)
+	parts := strings.Split(size, ";")
+	if len(parts) != 2 {
+		return true, nil
+	}
+	cols, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return true, nil
+	}
+	rows, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return true, nil
+	}
+	if cols < 20 || rows < 5 || cols > 300 || rows > 120 {
+		return true, nil
+	}
+	return true, session.WindowChange(rows, cols)
 }
 
 func (h *ServerConnectionsHandler) Delete(w http.ResponseWriter, r *http.Request) {

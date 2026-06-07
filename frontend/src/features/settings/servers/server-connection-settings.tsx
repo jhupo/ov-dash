@@ -1,11 +1,7 @@
-import {
-  type ClipboardEvent,
-  type KeyboardEvent,
-  type ReactNode,
-  useEffect,
-  useRef,
-  useState,
-} from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { FitAddon } from '@xterm/addon-fit'
+import { Terminal as XTerminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
 import { z } from 'zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -365,31 +361,81 @@ function ServerTerminalDialog({
   server: ServerConnection | null
   onOpenChange: (open: boolean) => void
 }) {
-  const [output, setOutput] = useState('')
   const [status, setStatus] = useState<'idle' | 'connecting' | 'open' | 'closed'>(
     'idle'
   )
   const socketRef = useRef<WebSocket | null>(null)
-  const terminalRef = useRef<HTMLDivElement | null>(null)
-  const commandBufferRef = useRef('')
+  const terminalElementRef = useRef<HTMLDivElement | null>(null)
+  const terminalRef = useRef<XTerminal | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
 
   useEffect(() => {
     if (!server) return
+    const element = terminalElementRef.current
+    if (!element) return
+
+    element.textContent = ''
+    const terminal = new XTerminal({
+      allowProposedApi: false,
+      convertEol: false,
+      cursorBlink: true,
+      fontFamily:
+        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 13,
+      lineHeight: 1.45,
+      rows: 32,
+      scrollback: 5000,
+      theme: {
+        background: '#050816',
+        foreground: '#d8f3ff',
+        cursor: '#f8fafc',
+        selectionBackground: '#334155',
+        black: '#0f172a',
+        blue: '#38bdf8',
+        cyan: '#22d3ee',
+        green: '#34d399',
+        magenta: '#c084fc',
+        red: '#fb7185',
+        white: '#e5e7eb',
+        yellow: '#fbbf24',
+      },
+    })
+    const fitAddon = new FitAddon()
+    terminal.loadAddon(fitAddon)
+    terminal.open(element)
+    terminal.write('正在连接 SSH...\r\n')
+    terminalRef.current = terminal
+    fitAddonRef.current = fitAddon
+    window.setTimeout(() => {
+      fitTerminal()
+      terminal.focus()
+    }, 0)
+
     const socket = new WebSocket(buildWebSSHUrl(server.id))
     socketRef.current = socket
-    commandBufferRef.current = ''
-    queueMicrotask(() => {
-      setOutput('')
-      setStatus('connecting')
+    setStatus('connecting')
+
+    const dataDisposable = terminal.onData((data) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(data)
+      }
     })
+    const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      sendTerminalResize(socket, cols, rows)
+    })
+    const resizeObserver = new ResizeObserver(() => fitTerminal())
+    resizeObserver.observe(element)
 
     socket.onopen = () => {
       setStatus('open')
-      window.setTimeout(() => terminalRef.current?.focus(), 0)
+      terminal.clear()
+      fitTerminal()
+      sendTerminalResize(socket, terminal.cols, terminal.rows)
+      window.setTimeout(() => terminal.focus(), 0)
     }
     socket.onmessage = (event) => {
       const message = String(event.data)
-      setOutput((current) => applyTerminalOutput(current, message))
+      terminal.write(message)
       if (
         message.includes('连接失败') ||
         message.includes('打开输入失败') ||
@@ -402,7 +448,8 @@ function ServerTerminalDialog({
     }
     socket.onerror = () => {
       const message = 'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
-      setOutput((current) => applyTerminalOutput(current, `\r\n${message}\r\n`))
+      terminal.writeln('')
+      terminal.writeln(message)
       toast.error(message)
     }
     socket.onclose = () => {
@@ -410,62 +457,27 @@ function ServerTerminalDialog({
     }
 
     return () => {
+      resizeObserver.disconnect()
+      resizeDisposable.dispose()
+      dataDisposable.dispose()
       socket.close()
       socketRef.current = null
+      fitAddonRef.current = null
+      terminalRef.current = null
+      terminal.dispose()
+    }
+
+    function fitTerminal() {
+      try {
+        fitAddon.fit()
+      } catch {
+        // xterm cannot measure hidden containers during dialog transitions.
+      }
     }
   }, [server])
 
-  useEffect(() => {
-    const element = terminalRef.current
-    if (element) {
-      element.scrollTop = element.scrollHeight
-    }
-  }, [output])
-
-  function sendTerminalData(data: string) {
-    const socket = socketRef.current
-    if (!data || !socket || socket.readyState !== WebSocket.OPEN) return
-    socket.send(data)
-  }
-
-  function handleTerminalKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.metaKey || event.altKey) return
-
-    if (event.ctrlKey) {
-      const code = controlCode(event.key)
-      if (!code) return
-      event.preventDefault()
-      if (event.key.toLowerCase() === 'l') {
-        setOutput('')
-      }
-      sendTerminalData(code)
-      return
-    }
-
-    const sequence = keySequence(event.key)
-    if (sequence) {
-      event.preventDefault()
-      if (event.key === 'Enter') {
-        commandBufferRef.current = ''
-      } else if (event.key === 'Backspace') {
-        commandBufferRef.current = commandBufferRef.current.slice(0, -1)
-      }
-      sendTerminalData(sequence)
-      return
-    }
-
-    if (event.key.length === 1) {
-      event.preventDefault()
-      commandBufferRef.current += event.key
-      sendTerminalData(event.key)
-    }
-  }
-
-  function handleTerminalPaste(event: ClipboardEvent<HTMLDivElement>) {
-    event.preventDefault()
-    const text = event.clipboardData.getData('text')
-    commandBufferRef.current += text
-    sendTerminalData(text)
+  function focusTerminal() {
+    terminalRef.current?.focus()
   }
 
   return (
@@ -487,17 +499,11 @@ function ServerTerminalDialog({
         </DialogHeader>
         <div className='px-5 pb-5'>
           <div
-            ref={terminalRef}
-            tabIndex={0}
-            role='textbox'
+            ref={terminalElementRef}
             aria-label='SSH 终端'
-            onKeyDown={handleTerminalKeyDown}
-            onPaste={handleTerminalPaste}
-            onClick={() => terminalRef.current?.focus()}
-            className='h-[min(68vh,640px)] overflow-auto rounded-md border bg-[#050816] p-4 font-mono text-[13px] leading-5 whitespace-pre text-cyan-50 shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
-          >
-            {output || (status === 'connecting' ? '正在连接 SSH...' : '')}
-          </div>
+            onClick={focusTerminal}
+            className='h-[min(68vh,640px)] overflow-hidden rounded-md border bg-[#050816] p-2 shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_.xterm]:h-full [&_.xterm-viewport]:bg-transparent! [&_.xterm-screen]:focus:outline-none'
+          />
         </div>
       </DialogContent>
     </Dialog>
@@ -512,105 +518,9 @@ function buildWebSSHUrl(id: string) {
   return base.toString()
 }
 
-function applyTerminalOutput(current: string, raw: string) {
-  let next = hasClearSequence(raw) ? '' : current
-  let text = stripTerminalControl(raw)
-  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '')
-
-  for (const char of text) {
-    if (char === '\b' || char === '\u007f') {
-      next = next.slice(0, -1)
-    } else {
-      next += char
-    }
-  }
-
-  if (next.length > 80_000) {
-    return next.slice(-60_000)
-  }
-  return next
-}
-
-function hasClearSequence(raw: string) {
-  return (
-    raw.includes(`${ESC}c`) ||
-    matchesAnsiCommand(raw, 'J') ||
-    matchesAnsiCommand(raw, 'H')
-  )
-}
-
-function stripTerminalControl(raw: string) {
-  return raw
-    .replace(OSC_3008_RE, '')
-    .replace(OSC_RE, '')
-    .replace(CSI_RE, '')
-    .replace(CHARSET_RE, '')
-    .replace(/\ufffd/g, '')
-    .replace(CONTROL_RE, '')
-}
-
-const ESC = String.fromCharCode(27)
-const BEL = String.fromCharCode(7)
-const CONTROL_CHARS = [
-  ...Array.from({ length: 8 }, (_, index) => String.fromCharCode(index)),
-  String.fromCharCode(11),
-  String.fromCharCode(12),
-  ...Array.from({ length: 18 }, (_, index) => String.fromCharCode(index + 14)),
-].join('')
-const OSC_3008_RE = new RegExp(
-  `(?:${escapeRegExp(ESC)}|\\ufffd)?\\]3008;[\\s\\S]*?(?:${escapeRegExp(BEL)}|${escapeRegExp(ESC)}\\\\|\\ufffd\\\\)`,
-  'g'
-)
-const OSC_RE = new RegExp(
-  `${escapeRegExp(ESC)}\\][\\s\\S]*?(?:${escapeRegExp(BEL)}|${escapeRegExp(ESC)}\\\\)`,
-  'g'
-)
-const CSI_RE = new RegExp(`${escapeRegExp(ESC)}\\[[0-?]*[ -/]*[@-~]`, 'g')
-const CHARSET_RE = new RegExp(`${escapeRegExp(ESC)}[()][A-Za-z0-9]`, 'g')
-const CONTROL_RE = new RegExp(`[${escapeRegExp(CONTROL_CHARS)}]`, 'g')
-
-function matchesAnsiCommand(raw: string, command: 'H' | 'J') {
-  const prefix = `${ESC}[`
-  let index = raw.indexOf(prefix)
-  while (index >= 0) {
-    const end = raw.indexOf(command, index + prefix.length)
-    if (end < 0) return false
-    const body = raw.slice(index + prefix.length, end)
-    if (/^[0-?]*[ -/]*[23]?$/.test(body)) return true
-    index = raw.indexOf(prefix, index + 1)
-  }
-  return false
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function keySequence(key: string) {
-  const sequences: Record<string, string> = {
-    Enter: '\r',
-    Backspace: '\u007f',
-    Tab: '\t',
-    Escape: '\u001b',
-    ArrowUp: '\u001b[A',
-    ArrowDown: '\u001b[B',
-    ArrowRight: '\u001b[C',
-    ArrowLeft: '\u001b[D',
-    Home: '\u001b[H',
-    End: '\u001b[F',
-    Delete: '\u001b[3~',
-    PageUp: '\u001b[5~',
-    PageDown: '\u001b[6~',
-  }
-  return sequences[key] ?? ''
-}
-
-function controlCode(key: string) {
-  const value = key.toLowerCase()
-  if (value.length !== 1) return ''
-  const code = value.charCodeAt(0)
-  if (code < 97 || code > 122) return ''
-  return String.fromCharCode(code - 96)
+function sendTerminalResize(socket: WebSocket, cols: number, rows: number) {
+  if (socket.readyState !== WebSocket.OPEN) return
+  socket.send(`\u001b]ovdash-resize;${cols};${rows}\u0007`)
 }
 
 function ServerConnectionDialog({
