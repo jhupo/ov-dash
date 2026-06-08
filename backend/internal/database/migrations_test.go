@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,6 +94,50 @@ func TestMigrationVersionDerivesModule(t *testing.T) {
 		gotVer, gotModule := migrationVersion(tt.file)
 		if gotVer != tt.wantVer || gotModule != tt.wantModule {
 			t.Fatalf("migrationVersion(%q) = (%q, %q), want (%q, %q)", tt.file, gotVer, gotModule, tt.wantVer, tt.wantModule)
+		}
+	}
+}
+
+func TestDiagnoseMigrationFilesReportsDuplicateNumericPrefixes(t *testing.T) {
+	files := []string{
+		filepath.Join("migrations", "0010_first.sql"),
+		filepath.Join("migrations", "0010_second.sql"),
+		filepath.Join("migrations", "0011_next.sql"),
+	}
+
+	diagnostics := diagnoseMigrationFiles(files)
+
+	if len(diagnostics) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1: %#v", len(diagnostics), diagnostics)
+	}
+	if diagnostics[0].Code != "duplicate_numeric_prefix" {
+		t.Fatalf("code = %q, want duplicate_numeric_prefix", diagnostics[0].Code)
+	}
+	if !strings.Contains(diagnostics[0].Message, "0010") {
+		t.Fatalf("message = %q, want numeric prefix", diagnostics[0].Message)
+	}
+	wantFiles := []string{"0010_first.sql", "0010_second.sql"}
+	if strings.Join(diagnostics[0].Files, ",") != strings.Join(wantFiles, ",") {
+		t.Fatalf("files = %#v, want %#v", diagnostics[0].Files, wantFiles)
+	}
+}
+
+func TestMigrationDirectoryDoesNotAddUnexpectedDuplicateNumericPrefixes(t *testing.T) {
+	files, _, err := migrationFiles(filepath.Join("..", "..", "migrations"))
+	if err != nil {
+		t.Fatalf("migrationFiles returned error: %v", err)
+	}
+
+	duplicates := duplicateMigrationNumericPrefixes(files)
+	allowed := []string{"0013", "0021"}
+	for prefix := range duplicates {
+		if !slices.Contains(allowed, prefix) {
+			t.Fatalf("unexpected duplicate migration numeric prefix %s: %#v", prefix, duplicates[prefix])
+		}
+	}
+	for _, prefix := range allowed {
+		if len(duplicates[prefix]) == 0 {
+			t.Fatalf("allowed duplicate prefix %s is no longer present; remove it from the allowlist", prefix)
 		}
 	}
 }

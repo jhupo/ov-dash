@@ -40,10 +40,11 @@ type migrationLockConn interface {
 const migrationLockKey int64 = 7181306580204105728
 
 type MigrationSummary struct {
-	Applied  []MigrationResult
-	Skipped  []MigrationResult
-	Failed   []MigrationResult
-	Duration time.Duration
+	Applied     []MigrationResult
+	Skipped     []MigrationResult
+	Failed      []MigrationResult
+	Diagnostics []MigrationDiagnostic
+	Duration    time.Duration
 }
 
 type MigrationResult struct {
@@ -53,6 +54,12 @@ type MigrationResult struct {
 	Status      string
 	ExecutionMS int
 	Error       string
+}
+
+type MigrationDiagnostic struct {
+	Code    string
+	Message string
+	Files   []string
 }
 
 func NewMigrationRunner(db *db.Pool) *MigrationRunner {
@@ -71,19 +78,11 @@ func (r *MigrationRunner) ApplyDir(ctx context.Context, dir string) (MigrationSu
 			return err
 		}
 
-		entries, err := os.ReadDir(dir)
+		files, diagnostics, err := migrationFiles(dir)
 		if err != nil {
 			return err
 		}
-
-		files := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-				continue
-			}
-			files = append(files, filepath.Join(dir, entry.Name()))
-		}
-		slices.Sort(files)
+		summary.Diagnostics = append(summary.Diagnostics, diagnostics...)
 
 		for _, file := range files {
 			result, err := r.ApplyFile(ctx, file)
@@ -106,6 +105,82 @@ func (r *MigrationRunner) ApplyDir(ctx context.Context, dir string) (MigrationSu
 		return summary, err
 	}
 	return summary, nil
+}
+
+func migrationFiles(dir string) ([]string, []MigrationDiagnostic, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, entry.Name()))
+	}
+	slices.Sort(files)
+	return files, diagnoseMigrationFiles(files), nil
+}
+
+func diagnoseMigrationFiles(files []string) []MigrationDiagnostic {
+	duplicates := duplicateMigrationNumericPrefixes(files)
+	if len(duplicates) == 0 {
+		return nil
+	}
+
+	prefixes := make([]string, 0, len(duplicates))
+	for prefix := range duplicates {
+		prefixes = append(prefixes, prefix)
+	}
+	slices.Sort(prefixes)
+
+	diagnostics := make([]MigrationDiagnostic, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		names := make([]string, len(duplicates[prefix]))
+		copy(names, duplicates[prefix])
+		slices.Sort(names)
+		diagnostics = append(diagnostics, MigrationDiagnostic{
+			Code:    "duplicate_numeric_prefix",
+			Message: fmt.Sprintf("migration numeric prefix %s is used by multiple files", prefix),
+			Files:   names,
+		})
+	}
+	return diagnostics
+}
+
+func duplicateMigrationNumericPrefixes(files []string) map[string][]string {
+	seen := map[string][]string{}
+	for _, file := range files {
+		prefix, ok := migrationNumericPrefix(file)
+		if !ok {
+			continue
+		}
+		seen[prefix] = append(seen[prefix], filepath.Base(file))
+	}
+
+	duplicates := map[string][]string{}
+	for prefix, names := range seen {
+		if len(names) > 1 {
+			duplicates[prefix] = names
+		}
+	}
+	return duplicates
+}
+
+func migrationNumericPrefix(file string) (string, bool) {
+	name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	prefix, _, ok := strings.Cut(name, "_")
+	if !ok || prefix == "" {
+		return "", false
+	}
+	for _, r := range prefix {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return prefix, true
 }
 
 func (r *MigrationRunner) ApplyFile(ctx context.Context, file string) (MigrationResult, error) {
