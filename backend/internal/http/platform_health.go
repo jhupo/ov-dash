@@ -61,7 +61,16 @@ func platformHealthHandler(runtime *platform.Runtime, registry *platformmodule.R
 			}},
 		}
 		if registry != nil {
-			checks = append(checks, registry.HealthChecks()...)
+			checks = append(checks, registry.HealthChecks(platformmodule.Context{
+				Config:  runtime.Config,
+				DB:      runtime.DB,
+				Queue:   runtime.Queue,
+				Cache:   runtime.Cache,
+				Events:  runtime.Events,
+				Logger:  runtime.Logger,
+				Secrets: runtime.Secrets,
+				Audit:   runtime.Audit,
+			})...)
 		}
 
 		writeJSON(w, http.StatusOK, runPlatformHealthChecks(ctx, checks, time.Now().UTC()))

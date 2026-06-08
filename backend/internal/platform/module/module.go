@@ -54,7 +54,7 @@ type CapabilityModule interface {
 
 type HealthModule interface {
 	Module
-	HealthChecks() []HealthCheck
+	HealthChecks(ctx Context) []HealthCheck
 }
 
 type SettingsModule interface {
@@ -225,14 +225,14 @@ func (r *Registry) Capabilities() []capability.Capability {
 	return values
 }
 
-func (r *Registry) HealthChecks() []HealthCheck {
+func (r *Registry) HealthChecks(ctx Context) []HealthCheck {
 	checks := []HealthCheck{}
 	for _, module := range r.modules {
 		healthModule, ok := module.(HealthModule)
 		if !ok {
 			continue
 		}
-		checks = append(checks, healthModule.HealthChecks()...)
+		checks = append(checks, healthModule.HealthChecks(ctx)...)
 	}
 	return checks
 }
