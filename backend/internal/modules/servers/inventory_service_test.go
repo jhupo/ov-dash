@@ -51,14 +51,18 @@ func TestNormalizeSaveInputValidatesRequiredFields(t *testing.T) {
 
 func TestPublicConnectionDoesNotExposeCredentialValues(t *testing.T) {
 	public := Connection{
-		ID:               "srv_1",
-		Name:             "edge",
-		Password:         "secret",
-		PrivateKey:       "private",
-		PasswordSecretID: "sec_password",
+		ID:                  "srv_1",
+		Name:                "edge",
+		Password:            "secret",
+		PrivateKey:          "private",
+		PasswordSecretID:    "sec_password",
+		CollectFailureCount: 3,
 	}.Public()
 
 	if !public.HasPassword || !public.HasPrivateKey {
 		t.Fatalf("credential availability flags not set: %+v", public)
+	}
+	if public.CollectFailureCount != 3 {
+		t.Fatalf("failure count = %d, want 3", public.CollectFailureCount)
 	}
 }

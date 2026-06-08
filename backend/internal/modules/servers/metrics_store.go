@@ -127,6 +127,7 @@ func (s *MetricsStore) Save(ctx context.Context, metric Metric, scheduleNext boo
 		SET collector_installed = true,
 		    collect_status = 'ok',
 		    collect_error = '',
+		    collect_failure_count = 0,
 		    last_collected_at = $2::timestamptz,
 		    agent_last_seen_at = $2::timestamptz,
 		    next_collect_at = CASE
