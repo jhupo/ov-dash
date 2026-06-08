@@ -68,11 +68,13 @@ func (r *probeRepositoryStub) MonitorActive(ctx context.Context) (bool, error) {
 }
 
 type serverProbeStub struct {
-	installErr error
-	collectErr error
-	metric     Metric
-	status     AgentStatus
-	statusErr  error
+	installErr     error
+	collectErr     error
+	collectOnceErr error
+	metric         Metric
+	onceMetric     Metric
+	status         AgentStatus
+	statusErr      error
 }
 
 func (p *serverProbeStub) Install(ctx context.Context, item Connection) error {
@@ -86,11 +88,22 @@ func (p *serverProbeStub) Collect(ctx context.Context, item Connection) (Metric,
 	return p.metric, nil
 }
 
+func (p *serverProbeStub) CollectOnce(ctx context.Context, item Connection) (Metric, error) {
+	if p.collectOnceErr != nil {
+		return Metric{}, p.collectOnceErr
+	}
+	return p.onceMetric, nil
+}
+
 func (p *serverProbeStub) Status(ctx context.Context, item Connection) (AgentStatus, error) {
 	if p.statusErr != nil {
 		return AgentStatus{}, p.statusErr
 	}
 	return p.status, nil
+}
+
+func (p *serverProbeStub) StatusOnce(ctx context.Context, item Connection) (AgentStatus, error) {
+	return p.Status(ctx, item)
 }
 
 func (p *serverProbeStub) Dial(ctx context.Context, item Connection) (net.Conn, error) {
@@ -103,7 +116,7 @@ func (p *serverProbeStub) CollectConn(ctx context.Context, item Connection, conn
 
 func TestProbeCoordinatorCollectMarksAndSavesMetric(t *testing.T) {
 	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
-	probe := &serverProbeStub{metric: Metric{ServerID: "srv_1", CPUPercent: 12}}
+	probe := &serverProbeStub{metric: Metric{ServerID: "srv_1", CPUPercent: 12}, onceMetric: Metric{ServerID: "srv_1", CPUPercent: 99}}
 	coordinator := NewProbeCoordinator(repository, probe)
 
 	if err := coordinator.Collect(context.Background(), "srv_1"); err != nil {
@@ -120,9 +133,28 @@ func TestProbeCoordinatorCollectMarksAndSavesMetric(t *testing.T) {
 	}
 }
 
+func TestProbeCoordinatorCollectFallsBackToSSHOnce(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	probe := &serverProbeStub{
+		collectErr: errors.New("tcp blocked"),
+		onceMetric: Metric{
+			ServerID:   "srv_1",
+			CPUPercent: 55,
+		},
+	}
+	coordinator := NewProbeCoordinator(repository, probe)
+
+	if err := coordinator.Collect(context.Background(), "srv_1"); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	if len(repository.saved) != 1 || repository.saved[0].CPUPercent != 55 {
+		t.Fatalf("ssh once metric was not saved: %#v", repository.saved)
+	}
+}
+
 func TestProbeCoordinatorCollectMarksFailure(t *testing.T) {
 	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
-	probe := &serverProbeStub{installErr: errors.New("install failed"), statusErr: errors.New("status unavailable")}
+	probe := &serverProbeStub{installErr: errors.New("install failed"), collectOnceErr: errors.New("once failed"), statusErr: errors.New("status unavailable")}
 	coordinator := NewProbeCoordinator(repository, probe)
 
 	if err := coordinator.Collect(context.Background(), "srv_1"); err == nil {
@@ -136,7 +168,8 @@ func TestProbeCoordinatorCollectMarksFailure(t *testing.T) {
 func TestProbeCoordinatorCollectFailureIncludesAgentStatusWhenAvailable(t *testing.T) {
 	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
 	probe := &serverProbeStub{
-		installErr: errors.New("install failed"),
+		installErr:     errors.New("install failed"),
+		collectOnceErr: errors.New("once failed"),
 		status: AgentStatus{
 			Version:       currentAgentVersion,
 			Port:          19087,
@@ -168,6 +201,25 @@ func TestProbeCoordinatorInstallSavesAgentMetric(t *testing.T) {
 	}
 	if len(repository.savedAgent) != 1 || repository.savedAgent[0].CPUPercent != 34 {
 		t.Fatalf("saved agent metrics = %#v", repository.savedAgent)
+	}
+}
+
+func TestProbeCoordinatorInstallFallsBackToSSHOnceMetric(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	probe := &serverProbeStub{
+		collectErr: errors.New("tcp blocked"),
+		onceMetric: Metric{
+			ServerID:   "srv_1",
+			CPUPercent: 77,
+		},
+	}
+	coordinator := NewProbeCoordinator(repository, probe)
+
+	if err := coordinator.Install(context.Background(), "srv_1"); err != nil {
+		t.Fatalf("Install returned error: %v", err)
+	}
+	if len(repository.savedAgent) != 1 || repository.savedAgent[0].CPUPercent != 77 {
+		t.Fatalf("ssh once agent metric was not saved: %#v", repository.savedAgent)
 	}
 }
 

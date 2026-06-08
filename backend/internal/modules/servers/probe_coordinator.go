@@ -22,7 +22,9 @@ type probeRepository interface {
 type serverProbe interface {
 	Install(ctx context.Context, item Connection) error
 	Collect(ctx context.Context, item Connection) (Metric, error)
+	CollectOnce(ctx context.Context, item Connection) (Metric, error)
 	Status(ctx context.Context, item Connection) (AgentStatus, error)
+	StatusOnce(ctx context.Context, item Connection) (AgentStatus, error)
 	Dial(ctx context.Context, item Connection) (net.Conn, error)
 	CollectConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (Metric, error)
 }
@@ -83,7 +85,7 @@ func (c *ProbeCoordinator) Install(ctx context.Context, id string) error {
 		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
 		return err
 	}
-	metric, err := c.probe.Collect(ctx, item)
+	metric, err := c.collectAfterInstall(ctx, item)
 	if err != nil {
 		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
 		return err
@@ -160,7 +162,19 @@ func (c *ProbeCoordinator) collect(ctx context.Context, item Connection) (Metric
 	if err := c.probe.Install(ctx, item); err != nil {
 		return Metric{}, err
 	}
-	return c.probe.Collect(ctx, item)
+	return c.collectAfterInstall(ctx, item)
+}
+
+func (c *ProbeCoordinator) collectAfterInstall(ctx context.Context, item Connection) (Metric, error) {
+	metric, err := c.probe.Collect(ctx, item)
+	if err == nil {
+		return metric, nil
+	}
+	fallbackMetric, fallbackErr := c.probe.CollectOnce(ctx, item)
+	if fallbackErr == nil {
+		return fallbackMetric, nil
+	}
+	return Metric{}, fmt.Errorf("%w; ssh once fallback failed: %v", err, fallbackErr)
 }
 
 func (c *ProbeCoordinator) annotateCollectError(ctx context.Context, item Connection, err error) error {

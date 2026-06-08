@@ -65,11 +65,29 @@ func (p *AgentProbe) Wait(ctx context.Context, item Connection) (AgentStatus, er
 
 func (p *AgentProbe) Status(ctx context.Context, item Connection) (AgentStatus, error) {
 	conn, err := p.Dial(ctx, item)
+	if err == nil {
+		defer conn.Close()
+		return p.StatusConn(ctx, item, conn, bufio.NewReader(conn))
+	}
+	status, fallbackErr := p.StatusOnce(ctx, item)
+	if fallbackErr == nil {
+		return status, nil
+	}
+	return AgentStatus{}, fmt.Errorf("%w; ssh status fallback failed: %v", err, fallbackErr)
+}
+
+func (p *AgentProbe) StatusOnce(ctx context.Context, item Connection) (AgentStatus, error) {
+	client, err := p.ssh.Connect(ctx, item)
 	if err != nil {
 		return AgentStatus{}, err
 	}
-	defer conn.Close()
-	return p.StatusConn(ctx, item, conn, bufio.NewReader(conn))
+	defer client.Close()
+
+	output, err := p.ssh.Output(ctx, client, agentPath+" status")
+	if err != nil {
+		return AgentStatus{}, err
+	}
+	return decodeAgentStatus(item.ID, output, time.Now().UTC())
 }
 
 func (p *AgentProbe) StatusConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (AgentStatus, error) {
@@ -87,6 +105,26 @@ func (p *AgentProbe) Collect(ctx context.Context, item Connection) (Metric, erro
 	}
 	defer conn.Close()
 	return p.CollectConn(ctx, item, conn, bufio.NewReader(conn))
+}
+
+func (p *AgentProbe) CollectOnce(ctx context.Context, item Connection) (Metric, error) {
+	client, err := p.ssh.Connect(ctx, item)
+	if err != nil {
+		return Metric{}, err
+	}
+	defer client.Close()
+
+	start := time.Now()
+	output, err := p.ssh.Output(ctx, client, agentPath+" once")
+	if err != nil {
+		return Metric{}, err
+	}
+	metric, err := decodeAgentMetric(item.ID, output, time.Now().UTC())
+	if err != nil {
+		return Metric{}, err
+	}
+	metric.LatencyMS = float64(time.Since(start).Microseconds()) / 1000
+	return metric, nil
 }
 
 func (p *AgentProbe) CollectConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (Metric, error) {
