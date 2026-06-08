@@ -39,25 +39,45 @@ func (p *AgentProbe) Install(ctx context.Context, item Connection) error {
 	if err := p.ssh.Run(ctx, client, privilegedInstallCommand(item.AgentPort)); err != nil {
 		return err
 	}
-	return p.Wait(ctx, item)
+	status, err := p.Wait(ctx, item)
+	if err != nil {
+		return err
+	}
+	return status.ValidateVersion()
 }
 
-func (p *AgentProbe) Wait(ctx context.Context, item Connection) error {
+func (p *AgentProbe) Wait(ctx context.Context, item Connection) (AgentStatus, error) {
 	var lastErr error
 	for attempt := 0; attempt < 10; attempt++ {
-		conn, err := p.Dial(ctx, item)
+		status, err := p.Status(ctx, item)
 		if err == nil {
-			_ = conn.Close()
-			return nil
+			return status, nil
 		}
 		lastErr = err
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return AgentStatus{}, ctx.Err()
 		case <-time.After(time.Second):
 		}
 	}
-	return lastErr
+	return AgentStatus{}, lastErr
+}
+
+func (p *AgentProbe) Status(ctx context.Context, item Connection) (AgentStatus, error) {
+	conn, err := p.Dial(ctx, item)
+	if err != nil {
+		return AgentStatus{}, err
+	}
+	defer conn.Close()
+	return p.StatusConn(ctx, item, conn, bufio.NewReader(conn))
+}
+
+func (p *AgentProbe) StatusConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (AgentStatus, error) {
+	output, err := p.requestConn(ctx, conn, reader, "status\n")
+	if err != nil {
+		return AgentStatus{}, err
+	}
+	return decodeAgentStatus(item.ID, output, time.Now().UTC())
 }
 
 func (p *AgentProbe) Collect(ctx context.Context, item Connection) (Metric, error) {
@@ -72,12 +92,7 @@ func (p *AgentProbe) Collect(ctx context.Context, item Connection) (Metric, erro
 func (p *AgentProbe) CollectConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (Metric, error) {
 	start := time.Now()
 
-	_ = conn.SetDeadline(time.Now().Add(p.readTimeout))
-	if _, err := io.WriteString(conn, "metrics\n"); err != nil {
-		return Metric{}, err
-	}
-
-	output, err := reader.ReadString('\n')
+	output, err := p.requestConn(ctx, conn, reader, "metrics\n")
 	if err != nil {
 		return Metric{}, err
 	}
@@ -89,6 +104,18 @@ func (p *AgentProbe) CollectConn(ctx context.Context, item Connection, conn net.
 	}
 	metric.LatencyMS = latencyMS
 	return metric, nil
+}
+
+func (p *AgentProbe) requestConn(ctx context.Context, conn net.Conn, reader *bufio.Reader, command string) (string, error) {
+	deadline := time.Now().Add(p.readTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if _, err := io.WriteString(conn, command); err != nil {
+		return "", err
+	}
+	return reader.ReadString('\n')
 }
 
 func (p *AgentProbe) Dial(ctx context.Context, item Connection) (net.Conn, error) {
@@ -126,6 +153,8 @@ Environment=OVDASH_AGENT_PORT=%[3]d
 ExecStart=%[1]s serve
 Restart=always
 RestartSec=3
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -133,6 +162,7 @@ OVDASH_SERVICE
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl enable --now ovdash-agent.service >/dev/null 2>&1 || true
 systemctl restart ovdash-agent.service >/dev/null 2>&1 || true
+%[1]s status
 	`, agentPath, agentScript, port)
 }
 

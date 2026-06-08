@@ -3,11 +3,39 @@ package servers
 const agentScript = `#!/bin/sh
 set -eu
 
+agent_version="2026.06.09.1"
 port="${OVDASH_AGENT_PORT:-19087}"
 mode="${1:-serve}"
 
 num() {
   printf '%s' "$1" | awk '{ if ($1 == "") print 0; else print $1 }'
+}
+
+json_bool_command() {
+  if command -v "$1" >/dev/null 2>&1; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+service_active() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ovdash-agent.service 2>/dev/null; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+status_once() {
+  printf '{'
+  printf '"version":"%s",' "$agent_version"
+  printf '"port":%s,' "$(num "$port")"
+  printf '"socat":%s,' "$(json_bool_command socat)"
+  printf '"nc":%s,' "$(json_bool_command nc)"
+  printf '"service_active":%s' "$(service_active)"
+  printf '}'
+  printf '\n'
 }
 
 collect_once() {
@@ -103,9 +131,32 @@ if [ "$mode" = "once" ]; then
   exit 0
 fi
 
+if [ "$mode" = "status" ] || [ "$mode" = "health" ]; then
+  status_once
+  exit 0
+fi
+
+if [ "$mode" = "version" ]; then
+  printf '%s\n' "$agent_version"
+  exit 0
+fi
+
 if [ "$mode" = "stream" ]; then
-  while IFS= read -r _; do
-    collect_once
+  while IFS= read -r command; do
+    case "$command" in
+      status|health)
+        status_once
+        ;;
+      version)
+        printf '{"version":"%s"}\n' "$agent_version"
+        ;;
+      metrics|"")
+        collect_once
+        ;;
+      *)
+        printf '{"error":"unknown_command"}\n'
+        ;;
+    esac
   done
   exit 0
 fi

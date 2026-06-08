@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +71,8 @@ type serverProbeStub struct {
 	installErr error
 	collectErr error
 	metric     Metric
+	status     AgentStatus
+	statusErr  error
 }
 
 func (p *serverProbeStub) Install(ctx context.Context, item Connection) error {
@@ -81,6 +84,13 @@ func (p *serverProbeStub) Collect(ctx context.Context, item Connection) (Metric,
 		return Metric{}, p.collectErr
 	}
 	return p.metric, nil
+}
+
+func (p *serverProbeStub) Status(ctx context.Context, item Connection) (AgentStatus, error) {
+	if p.statusErr != nil {
+		return AgentStatus{}, p.statusErr
+	}
+	return p.status, nil
 }
 
 func (p *serverProbeStub) Dial(ctx context.Context, item Connection) (net.Conn, error) {
@@ -112,7 +122,7 @@ func TestProbeCoordinatorCollectMarksAndSavesMetric(t *testing.T) {
 
 func TestProbeCoordinatorCollectMarksFailure(t *testing.T) {
 	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
-	probe := &serverProbeStub{installErr: errors.New("install failed")}
+	probe := &serverProbeStub{installErr: errors.New("install failed"), statusErr: errors.New("status unavailable")}
 	coordinator := NewProbeCoordinator(repository, probe)
 
 	if err := coordinator.Collect(context.Background(), "srv_1"); err == nil {
@@ -120,6 +130,31 @@ func TestProbeCoordinatorCollectMarksFailure(t *testing.T) {
 	}
 	if repository.failed["srv_1"] != "install failed" {
 		t.Fatalf("failure was not recorded: %#v", repository.failed)
+	}
+}
+
+func TestProbeCoordinatorCollectFailureIncludesAgentStatusWhenAvailable(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	probe := &serverProbeStub{
+		installErr: errors.New("install failed"),
+		status: AgentStatus{
+			Version:       currentAgentVersion,
+			Port:          19087,
+			Socat:         true,
+			NC:            false,
+			ServiceActive: true,
+		},
+	}
+	coordinator := NewProbeCoordinator(repository, probe)
+
+	if err := coordinator.Collect(context.Background(), "srv_1"); err == nil {
+		t.Fatal("Collect returned nil error")
+	}
+	message := repository.failed["srv_1"]
+	for _, snippet := range []string{"install failed", "agent version=", "service_active=true", "socat=true", "port=19087"} {
+		if !strings.Contains(message, snippet) {
+			t.Fatalf("failure message missing %q: %s", snippet, message)
+		}
 	}
 }
 
@@ -133,6 +168,20 @@ func TestProbeCoordinatorInstallSavesAgentMetric(t *testing.T) {
 	}
 	if len(repository.savedAgent) != 1 || repository.savedAgent[0].CPUPercent != 34 {
 		t.Fatalf("saved agent metrics = %#v", repository.savedAgent)
+	}
+}
+
+func TestProbeCoordinatorStatusDelegates(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	probe := &serverProbeStub{status: AgentStatus{ServerID: "srv_1", Version: currentAgentVersion}}
+	coordinator := NewProbeCoordinator(repository, probe)
+
+	status, err := coordinator.Status(context.Background(), "srv_1")
+	if err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	if status.Version != currentAgentVersion {
+		t.Fatalf("status = %+v", status)
 	}
 }
 

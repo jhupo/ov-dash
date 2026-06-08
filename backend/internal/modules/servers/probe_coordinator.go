@@ -3,6 +3,7 @@ package servers
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"time"
 )
@@ -21,6 +22,7 @@ type probeRepository interface {
 type serverProbe interface {
 	Install(ctx context.Context, item Connection) error
 	Collect(ctx context.Context, item Connection) (Metric, error)
+	Status(ctx context.Context, item Connection) (AgentStatus, error)
 	Dial(ctx context.Context, item Connection) (net.Conn, error)
 	CollectConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (Metric, error)
 }
@@ -63,7 +65,7 @@ func (c *ProbeCoordinator) Collect(ctx context.Context, id string) error {
 
 	metric, err := c.collect(ctx, item)
 	if err != nil {
-		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, err)))
 		return err
 	}
 	return c.repository.SaveMetric(ctx, metric)
@@ -87,6 +89,14 @@ func (c *ProbeCoordinator) Install(ctx context.Context, id string) error {
 		return err
 	}
 	return c.repository.SaveAgentMetric(ctx, metric)
+}
+
+func (c *ProbeCoordinator) Status(ctx context.Context, id string) (AgentStatus, error) {
+	item, err := c.repository.Get(ctx, id)
+	if err != nil {
+		return AgentStatus{}, err
+	}
+	return c.probe.Status(ctx, item)
 }
 
 func (c *ProbeCoordinator) TouchMonitor(ctx context.Context, ttl time.Duration) error {
@@ -131,7 +141,7 @@ func (c *ProbeCoordinator) CollectAgentLoop(ctx context.Context, id string) erro
 
 		metric, err := c.probe.CollectConn(ctx, item, conn, reader)
 		if err != nil {
-			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, err)))
 			return err
 		}
 		if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
@@ -151,4 +161,12 @@ func (c *ProbeCoordinator) collect(ctx context.Context, item Connection) (Metric
 		return Metric{}, err
 	}
 	return c.probe.Collect(ctx, item)
+}
+
+func (c *ProbeCoordinator) annotateCollectError(ctx context.Context, item Connection, err error) error {
+	status, statusErr := c.probe.Status(ctx, item)
+	if statusErr != nil {
+		return err
+	}
+	return fmt.Errorf("%w; agent version=%s service_active=%t socat=%t nc=%t port=%d", err, status.Version, status.ServiceActive, status.Socat, status.NC, status.Port)
 }
