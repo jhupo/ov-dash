@@ -123,12 +123,15 @@ func (c *ProbeCoordinator) CollectAgentLoop(ctx context.Context, id string) erro
 		conn, err = c.probe.Dial(ctx, item)
 	}
 	if err != nil {
-		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-		return err
+		return c.collectAgentFallbackLoop(ctx, item, err)
 	}
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 
+	return c.collectAgentTCPStream(ctx, item, conn, reader)
+}
+
+func (c *ProbeCoordinator) collectAgentTCPStream(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -144,6 +147,37 @@ func (c *ProbeCoordinator) CollectAgentLoop(ctx context.Context, id string) erro
 		metric, err := c.probe.CollectConn(ctx, item, conn, reader)
 		if err != nil {
 			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, err)))
+			return err
+		}
+		if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *ProbeCoordinator) collectAgentFallbackLoop(ctx context.Context, item Connection, dialErr error) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		active, err := c.repository.MonitorActive(ctx)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+
+		metric, err := c.probe.CollectOnce(ctx, item)
+		if err != nil {
+			combined := fmt.Errorf("%w; ssh once fallback failed: %v", dialErr, err)
+			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, combined)))
 			return err
 		}
 		if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {

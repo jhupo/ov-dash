@@ -18,6 +18,8 @@ type probeRepositoryStub struct {
 	saved          []Metric
 	savedAgent     []Metric
 	monitorActive  bool
+	monitorChecks  int
+	activeChecks   int
 	touchedMonitor bool
 }
 
@@ -64,6 +66,10 @@ func (r *probeRepositoryStub) TouchMonitorActivity(ctx context.Context, ttl time
 }
 
 func (r *probeRepositoryStub) MonitorActive(ctx context.Context) (bool, error) {
+	r.monitorChecks++
+	if r.activeChecks > 0 {
+		return r.monitorChecks <= r.activeChecks, nil
+	}
 	return r.monitorActive, nil
 }
 
@@ -71,6 +77,7 @@ type serverProbeStub struct {
 	installErr     error
 	collectErr     error
 	collectOnceErr error
+	dialErr        error
 	metric         Metric
 	onceMetric     Metric
 	status         AgentStatus
@@ -107,6 +114,9 @@ func (p *serverProbeStub) StatusOnce(ctx context.Context, item Connection) (Agen
 }
 
 func (p *serverProbeStub) Dial(ctx context.Context, item Connection) (net.Conn, error) {
+	if p.dialErr != nil {
+		return nil, p.dialErr
+	}
 	return nil, errors.New("dial unavailable in unit test")
 }
 
@@ -234,6 +244,48 @@ func TestProbeCoordinatorStatusDelegates(t *testing.T) {
 	}
 	if status.Version != currentAgentVersion {
 		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestProbeCoordinatorCollectAgentLoopFallsBackToSSHOnce(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	repository.activeChecks = 1
+	probe := &serverProbeStub{
+		dialErr: errors.New("tcp blocked"),
+		onceMetric: Metric{
+			ServerID:   "srv_1",
+			CPUPercent: 88,
+		},
+	}
+	coordinator := NewProbeCoordinator(repository, probe)
+
+	if err := coordinator.CollectAgentLoop(context.Background(), "srv_1"); err != nil {
+		t.Fatalf("CollectAgentLoop returned error: %v", err)
+	}
+	if len(repository.savedAgent) != 1 || repository.savedAgent[0].CPUPercent != 88 {
+		t.Fatalf("fallback agent metric was not saved: %#v", repository.savedAgent)
+	}
+	if len(repository.failed) != 0 {
+		t.Fatalf("unexpected failed marks: %#v", repository.failed)
+	}
+}
+
+func TestProbeCoordinatorCollectAgentLoopMarksFallbackFailure(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	repository.activeChecks = 1
+	probe := &serverProbeStub{
+		dialErr:        errors.New("tcp blocked"),
+		collectOnceErr: errors.New("ssh failed"),
+		statusErr:      errors.New("status unavailable"),
+	}
+	coordinator := NewProbeCoordinator(repository, probe)
+
+	if err := coordinator.CollectAgentLoop(context.Background(), "srv_1"); err == nil {
+		t.Fatal("CollectAgentLoop returned nil error")
+	}
+	message := repository.failed["srv_1"]
+	if !strings.Contains(message, "tcp blocked") || !strings.Contains(message, "ssh once fallback failed") {
+		t.Fatalf("fallback failure was not recorded with both causes: %s", message)
 	}
 }
 
