@@ -52,8 +52,12 @@ func (c *Collector) Shell(ctx context.Context, id string) (*ssh.Client, *ssh.Ses
 	return c.ssh.OpenShell(ctx, id)
 }
 
-func (c *Collector) CollectAgentLoop(ctx context.Context, id string) error {
-	return c.coordinator.CollectAgentLoop(ctx, id)
+func (c *Collector) CollectAgentLoop(ctx context.Context, id string, observers ...CollectionObserver) error {
+	coordinator := c.coordinator
+	if len(observers) > 0 && observers[0] != nil {
+		coordinator = coordinator.WithObserver(observers[0])
+	}
+	return coordinator.CollectAgentLoop(ctx, id)
 }
 
 func trimError(err error) string {

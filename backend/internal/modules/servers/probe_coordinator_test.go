@@ -87,6 +87,14 @@ type serverProbeStub struct {
 	statusErr      error
 }
 
+type collectionObserverStub struct {
+	events []CollectionEvent
+}
+
+func (o *collectionObserverStub) ObserveCollection(ctx context.Context, event CollectionEvent) {
+	o.events = append(o.events, event)
+}
+
 func (p *serverProbeStub) Install(ctx context.Context, item Connection) error {
 	p.installCalls++
 	return p.installErr
@@ -285,6 +293,42 @@ func TestProbeCoordinatorCollectAgentLoopFallsBackToSSHOnce(t *testing.T) {
 	}
 	if probe.ensureCalls != 1 {
 		t.Fatalf("EnsureCurrent calls = %d, want 1", probe.ensureCalls)
+	}
+}
+
+func TestProbeCoordinatorCollectAgentLoopEmitsFallbackEvents(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	repository.activeChecks = 1
+	probe := &serverProbeStub{
+		dialErr: errors.New("tcp blocked"),
+		onceMetric: Metric{
+			ServerID:  "srv_1",
+			LatencyMS: 12.5,
+		},
+	}
+	observer := &collectionObserverStub{}
+	coordinator := NewProbeCoordinator(repository, probe).WithObserver(observer)
+
+	if err := coordinator.CollectAgentLoop(context.Background(), "srv_1"); err != nil {
+		t.Fatalf("CollectAgentLoop returned error: %v", err)
+	}
+
+	stages := make([]string, 0, len(observer.events))
+	for _, event := range observer.events {
+		stages = append(stages, event.Stage)
+		if event.ServerID != "srv_1" {
+			t.Fatalf("event server id = %q, want srv_1", event.ServerID)
+		}
+	}
+	want := []string{"start", "agent.ensure", "agent.ready", "fallback", "collect.ok", "monitor.inactive"}
+	if strings.Join(stages, ",") != strings.Join(want, ",") {
+		t.Fatalf("stages = %#v, want %#v", stages, want)
+	}
+	if observer.events[3].Mode != "ssh_once" {
+		t.Fatalf("fallback mode = %q, want ssh_once", observer.events[3].Mode)
+	}
+	if observer.events[4].Metadata["latency_ms"] != 12.5 {
+		t.Fatalf("collect latency metadata = %#v", observer.events[4].Metadata)
 	}
 }
 

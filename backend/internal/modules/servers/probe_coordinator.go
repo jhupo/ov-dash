@@ -33,6 +33,7 @@ type serverProbe interface {
 type ProbeCoordinator struct {
 	repository probeRepository
 	probe      serverProbe
+	observer   CollectionObserver
 }
 
 func NewProbeCoordinator(repository probeRepository, probe serverProbe) *ProbeCoordinator {
@@ -40,6 +41,15 @@ func NewProbeCoordinator(repository probeRepository, probe serverProbe) *ProbeCo
 		repository: repository,
 		probe:      probe,
 	}
+}
+
+func (c *ProbeCoordinator) WithObserver(observer CollectionObserver) *ProbeCoordinator {
+	if c == nil {
+		return c
+	}
+	next := *c
+	next.observer = observer
+	return &next
 }
 
 func (c *ProbeCoordinator) CollectAll(ctx context.Context) {
@@ -111,20 +121,26 @@ func (c *ProbeCoordinator) CollectAgentLoop(ctx context.Context, id string) erro
 	if err != nil {
 		return err
 	}
+	c.observe(ctx, item.ID, "start", "", "server collection started", nil)
 	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
 		return err
 	}
+	c.observe(ctx, item.ID, "agent.ensure", "", "checking server agent", nil)
 	if err := c.probe.EnsureCurrent(ctx, item); err != nil {
 		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, err)))
+		c.observe(ctx, item.ID, "agent.ensure_failed", "", "server agent check failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	c.observe(ctx, item.ID, "agent.ready", "", "server agent is current", nil)
 
 	conn, err := c.probe.Dial(ctx, item)
 	if err != nil {
+		c.observe(ctx, item.ID, "fallback", "ssh_once", "agent TCP unavailable, using SSH once fallback", map[string]any{"error": err.Error()})
 		return c.collectAgentFallbackLoop(ctx, item, err)
 	}
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
+	c.observe(ctx, item.ID, "stream.connected", "tcp", "agent TCP stream connected", nil)
 
 	return c.collectAgentTCPStream(ctx, item, conn, reader)
 }
@@ -139,17 +155,20 @@ func (c *ProbeCoordinator) collectAgentTCPStream(ctx context.Context, item Conne
 			return err
 		}
 		if !active {
+			c.observe(ctx, item.ID, "monitor.inactive", "tcp", "server monitor inactive, stopping collection", nil)
 			return nil
 		}
 
 		metric, err := c.probe.CollectConn(ctx, item, conn, reader)
 		if err != nil {
 			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, err)))
+			c.observe(ctx, item.ID, "collect.failed", "tcp", "agent TCP collection failed", map[string]any{"error": err.Error()})
 			return err
 		}
 		if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
 			return err
 		}
+		c.observe(ctx, item.ID, "collect.ok", "tcp", "agent TCP metric saved", map[string]any{"latency_ms": metric.LatencyMS})
 
 		select {
 		case <-ctx.Done():
@@ -169,6 +188,7 @@ func (c *ProbeCoordinator) collectAgentFallbackLoop(ctx context.Context, item Co
 			return err
 		}
 		if !active {
+			c.observe(ctx, item.ID, "monitor.inactive", "ssh_once", "server monitor inactive, stopping collection", nil)
 			return nil
 		}
 
@@ -176,11 +196,13 @@ func (c *ProbeCoordinator) collectAgentFallbackLoop(ctx context.Context, item Co
 		if err != nil {
 			combined := fmt.Errorf("%w; ssh once fallback failed: %v", dialErr, err)
 			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, combined)))
+			c.observe(ctx, item.ID, "collect.failed", "ssh_once", "agent SSH once fallback failed", map[string]any{"error": err.Error(), "dial_error": dialErr.Error()})
 			return err
 		}
 		if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
 			return err
 		}
+		c.observe(ctx, item.ID, "collect.ok", "ssh_once", "agent SSH once metric saved", map[string]any{"latency_ms": metric.LatencyMS})
 
 		select {
 		case <-ctx.Done():
@@ -215,4 +237,21 @@ func (c *ProbeCoordinator) annotateCollectError(ctx context.Context, item Connec
 		return err
 	}
 	return fmt.Errorf("%w; agent version=%s service_active=%t socat=%t nc=%t port=%d", err, status.Version, status.ServiceActive, status.Socat, status.NC, status.Port)
+}
+
+func (c *ProbeCoordinator) observe(ctx context.Context, serverID string, stage string, mode string, message string, metadata map[string]any) {
+	if c == nil || c.observer == nil {
+		return
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	c.observer.ObserveCollection(ctx, CollectionEvent{
+		ServerID: serverID,
+		Stage:    stage,
+		Mode:     mode,
+		Stream:   "system",
+		Message:  message,
+		Metadata: metadata,
+	})
 }
