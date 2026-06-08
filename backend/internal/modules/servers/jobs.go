@@ -15,6 +15,8 @@ type CollectJobHandler struct {
 	logger    *zap.Logger
 }
 
+const ServerCollectMaxAttempts = queue.DefaultMaxAttempts
+
 func NewCollectJobHandler(collector *Collector, logger *zap.Logger) *CollectJobHandler {
 	return &CollectJobHandler{
 		collector: collector,
@@ -26,7 +28,7 @@ func (Module) RegisterJobs(ctx platformmodule.Context, reg *platformmodule.JobRe
 	return reg.Register(platformmodule.JobDefinition{
 		Type:        "server.collect",
 		Description: "Open a server agent collection session.",
-		MaxAttempts: 1,
+		MaxAttempts: ServerCollectMaxAttempts,
 		Handler: NewCollectJobHandler(
 			NewCollector(NewRepositoryWithSecrets(ctx.DB, ctx.Secrets)),
 			ctx.Logger,

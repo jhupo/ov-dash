@@ -353,7 +353,7 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 			r.runtime.Logger.Error("create server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
 		}
-		job.MaxAttempts = 1
+		job.MaxAttempts = servers.ServerCollectMaxAttempts
 		if err := r.runtime.Queue.Enqueue(ctx, r.runtime.Config.Worker.QueueName, job); err != nil {
 			r.runtime.Logger.Error("enqueue server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
