@@ -13,16 +13,39 @@ import (
 )
 
 type Repository struct {
-	db      *db.Pool
-	secrets *secret.Store
+	db          *db.Pool
+	credentials *CredentialResolver
+	metrics     *MetricsStore
 }
 
 func NewRepository(db *db.Pool) *Repository {
-	return &Repository{db: db}
+	return NewRepositoryWithCredentials(db, nil)
 }
 
 func NewRepositoryWithSecrets(db *db.Pool, secrets *secret.Store) *Repository {
-	return &Repository{db: db, secrets: secrets}
+	return NewRepositoryWithCredentials(db, NewCredentialResolver(secrets))
+}
+
+func NewRepositoryWithCredentials(db *db.Pool, credentials *CredentialResolver) *Repository {
+	return &Repository{
+		db:          db,
+		credentials: credentials,
+		metrics:     NewMetricsStore(db),
+	}
+}
+
+func (r *Repository) credentialResolver() *CredentialResolver {
+	if r.credentials != nil {
+		return r.credentials
+	}
+	return NewCredentialResolver(nil)
+}
+
+func (r *Repository) metricStore() *MetricsStore {
+	if r.metrics != nil {
+		return r.metrics
+	}
+	return NewMetricsStore(r.db)
 }
 
 func (r *Repository) List(ctx context.Context) ([]Connection, error) {
@@ -52,7 +75,7 @@ func (r *Repository) List(ctx context.Context) ([]Connection, error) {
 		if err != nil {
 			return nil, err
 		}
-		item = r.resolveSecrets(ctx, item)
+		item = r.credentialResolver().Resolve(ctx, item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -78,44 +101,17 @@ func (r *Repository) Get(ctx context.Context, id string) (Connection, error) {
 	if err != nil {
 		return Connection{}, err
 	}
-	return r.resolveSecrets(ctx, item), nil
+	return r.credentialResolver().Resolve(ctx, item), nil
 }
 
 func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, error) {
-	if input.ClearSecret && r.secrets != nil {
-		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "password")
-		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "private_key")
-	}
-
-	password := input.Password
-	privateKey := input.PrivateKey
-	passwordSecretID := ""
-	privateKeySecretID := ""
-	if input.Password != nil && r.secrets != nil && *input.Password != "" {
-		id, err := r.secrets.Put(ctx, "server_connections:"+input.ID, "password", *input.Password)
-		if err != nil {
-			return Connection{}, err
-		}
-		passwordSecretID = id
-		empty := ""
-		password = &empty
-	} else if input.Password != nil && r.secrets != nil {
-		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "password")
-	}
-	if input.PrivateKey != nil && r.secrets != nil && *input.PrivateKey != "" {
-		id, err := r.secrets.Put(ctx, "server_connections:"+input.ID, "private_key", *input.PrivateKey)
-		if err != nil {
-			return Connection{}, err
-		}
-		privateKeySecretID = id
-		empty := ""
-		privateKey = &empty
-	} else if input.PrivateKey != nil && r.secrets != nil {
-		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "private_key")
+	credentials, err := r.credentialResolver().PrepareSave(ctx, input)
+	if err != nil {
+		return Connection{}, err
 	}
 
 	var item Connection
-	err := r.db.QueryRow(ctx, `
+	err = r.db.QueryRow(ctx, `
 		INSERT INTO server_connections (
 			id, name, group_name, region, host, port, username, auth_type,
 			password, private_key, password_secret_id, private_key_secret_id,
@@ -168,10 +164,10 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 		input.Port,
 		input.Username,
 		input.AuthType,
-		password,
-		privateKey,
-		passwordSecretID,
-		privateKeySecretID,
+		credentials.Password,
+		credentials.PrivateKey,
+		credentials.PasswordSecretID,
+		credentials.PrivateKeySecretID,
 		input.ExpiresAt,
 		input.ClearSecret,
 		input.CollectInterval,
@@ -205,7 +201,7 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 	if err != nil {
 		return Connection{}, err
 	}
-	return r.resolveSecrets(ctx, item), nil
+	return r.credentialResolver().Resolve(ctx, item), nil
 }
 
 func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connection, error) {
@@ -250,7 +246,7 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 		if err != nil {
 			return nil, err
 		}
-		item = r.resolveSecrets(ctx, item)
+		item = r.credentialResolver().Resolve(ctx, item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -312,85 +308,14 @@ func (r *Repository) MarkCollectQueued(ctx context.Context, id string) error {
 }
 
 func (r *Repository) Samples(ctx context.Context, id string, since time.Time) ([]Metric, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT
-			server_id, cpu_percent, cpu_cores, latency_ms, memory_used_bytes, memory_total_bytes,
-			swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes,
-			network_rx_bytes, network_tx_bytes, network_rx_rate_bps, network_tx_rate_bps,
-			load1, load5, load15, tcp_connections, udp_connections, process_count, uptime_seconds, architecture, virtualization,
-			os_name, cpu_model, gpu_model, region, raw, collected_at
-		FROM server_metric_samples
-		WHERE server_id = $1
-		  AND collected_at >= $2
-		ORDER BY collected_at ASC
-	`, id, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]Metric, 0)
-	for rows.Next() {
-		item, err := scanMetricSample(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-type metricScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanMetricSample(row metricScanner) (Metric, error) {
-	var item Metric
-	var raw []byte
-	if err := row.Scan(
-		&item.ServerID,
-		&item.CPUPercent,
-		&item.CPUCores,
-		&item.LatencyMS,
-		&item.MemoryUsedBytes,
-		&item.MemoryTotalBytes,
-		&item.SwapUsedBytes,
-		&item.SwapTotalBytes,
-		&item.DiskUsedBytes,
-		&item.DiskTotalBytes,
-		&item.NetworkRXBytes,
-		&item.NetworkTXBytes,
-		&item.NetworkRXRateBps,
-		&item.NetworkTXRateBps,
-		&item.Load1,
-		&item.Load5,
-		&item.Load15,
-		&item.TCPConnections,
-		&item.UDPConnections,
-		&item.ProcessCount,
-		&item.UptimeSeconds,
-		&item.Architecture,
-		&item.Virtualization,
-		&item.OSName,
-		&item.CPUModel,
-		&item.GPUModel,
-		&item.Region,
-		&raw,
-		&item.CollectedAt,
-	); err != nil {
-		return Metric{}, err
-	}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &item.Raw)
-	}
-	return item, nil
+	return r.metricStore().Samples(ctx, id, since)
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
 	item, _ := r.Get(ctx, id)
 	_, err := r.db.Exec(ctx, `DELETE FROM server_connections WHERE id = $1`, id)
 	if err == nil {
-		_ = r.deleteSecrets(ctx, item)
+		_ = r.credentialResolver().Delete(ctx, item)
 	}
 	return err
 }
@@ -417,105 +342,11 @@ func (r *Repository) MarkCollectFailed(ctx context.Context, id string, message s
 }
 
 func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
-	return r.saveMetric(ctx, metric, true)
+	return r.metricStore().Save(ctx, metric, true)
 }
 
 func (r *Repository) SaveAgentMetric(ctx context.Context, metric Metric) error {
-	return r.saveMetric(ctx, metric, false)
-}
-
-func (r *Repository) saveMetric(ctx context.Context, metric Metric, scheduleNext bool) error {
-	raw, err := json.Marshal(metric.Raw)
-	if err != nil {
-		return err
-	}
-
-	_, err = r.db.Exec(ctx, `
-		INSERT INTO server_metrics (
-			server_id, cpu_percent, cpu_cores, latency_ms, memory_used_bytes, memory_total_bytes,
-			swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes,
-			network_rx_bytes, network_tx_bytes, network_rx_rate_bps, network_tx_rate_bps,
-			load1, load5, load15, tcp_connections, udp_connections, process_count, uptime_seconds, architecture, virtualization,
-			os_name, cpu_model, gpu_model, region, raw, collected_at
-		)
-		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-			$13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
-		)
-		ON CONFLICT (server_id) DO UPDATE SET
-			cpu_percent = EXCLUDED.cpu_percent,
-			cpu_cores = EXCLUDED.cpu_cores,
-			latency_ms = EXCLUDED.latency_ms,
-			memory_used_bytes = EXCLUDED.memory_used_bytes,
-			memory_total_bytes = EXCLUDED.memory_total_bytes,
-			swap_used_bytes = EXCLUDED.swap_used_bytes,
-			swap_total_bytes = EXCLUDED.swap_total_bytes,
-			disk_used_bytes = EXCLUDED.disk_used_bytes,
-			disk_total_bytes = EXCLUDED.disk_total_bytes,
-			network_rx_bytes = EXCLUDED.network_rx_bytes,
-			network_tx_bytes = EXCLUDED.network_tx_bytes,
-			network_rx_rate_bps = EXCLUDED.network_rx_rate_bps,
-			network_tx_rate_bps = EXCLUDED.network_tx_rate_bps,
-			load1 = EXCLUDED.load1,
-			load5 = EXCLUDED.load5,
-			load15 = EXCLUDED.load15,
-			tcp_connections = EXCLUDED.tcp_connections,
-			udp_connections = EXCLUDED.udp_connections,
-			process_count = EXCLUDED.process_count,
-			uptime_seconds = EXCLUDED.uptime_seconds,
-			architecture = EXCLUDED.architecture,
-			virtualization = EXCLUDED.virtualization,
-			os_name = EXCLUDED.os_name,
-			cpu_model = EXCLUDED.cpu_model,
-			gpu_model = EXCLUDED.gpu_model,
-			region = EXCLUDED.region,
-			raw = EXCLUDED.raw,
-			collected_at = EXCLUDED.collected_at
-	`, metric.ServerID, metric.CPUPercent, metric.CPUCores, metric.LatencyMS, metric.MemoryUsedBytes, metric.MemoryTotalBytes,
-		metric.SwapUsedBytes, metric.SwapTotalBytes, metric.DiskUsedBytes, metric.DiskTotalBytes,
-		metric.NetworkRXBytes, metric.NetworkTXBytes, metric.NetworkRXRateBps, metric.NetworkTXRateBps,
-		metric.Load1, metric.Load5, metric.Load15, metric.TCPConnections, metric.UDPConnections, metric.ProcessCount, metric.UptimeSeconds, metric.Architecture,
-		metric.Virtualization, metric.OSName, metric.CPUModel, metric.GPUModel, metric.Region, raw, metric.CollectedAt)
-	if err != nil {
-		return err
-	}
-
-	_, err = r.db.Exec(ctx, `
-		INSERT INTO server_metric_samples (
-			server_id, cpu_percent, cpu_cores, latency_ms, memory_used_bytes, memory_total_bytes,
-			swap_used_bytes, swap_total_bytes, disk_used_bytes, disk_total_bytes,
-			network_rx_bytes, network_tx_bytes, network_rx_rate_bps, network_tx_rate_bps,
-			load1, load5, load15, tcp_connections, udp_connections, process_count, uptime_seconds, architecture, virtualization,
-			os_name, cpu_model, gpu_model, region, raw, collected_at
-		)
-		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-			$13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
-		)
-	`, metric.ServerID, metric.CPUPercent, metric.CPUCores, metric.LatencyMS, metric.MemoryUsedBytes, metric.MemoryTotalBytes,
-		metric.SwapUsedBytes, metric.SwapTotalBytes, metric.DiskUsedBytes, metric.DiskTotalBytes,
-		metric.NetworkRXBytes, metric.NetworkTXBytes, metric.NetworkRXRateBps, metric.NetworkTXRateBps,
-		metric.Load1, metric.Load5, metric.Load15, metric.TCPConnections, metric.UDPConnections, metric.ProcessCount, metric.UptimeSeconds, metric.Architecture,
-		metric.Virtualization, metric.OSName, metric.CPUModel, metric.GPUModel, metric.Region, raw, metric.CollectedAt)
-	if err != nil {
-		return err
-	}
-
-	_, err = r.db.Exec(ctx, `
-		UPDATE server_connections
-		SET collector_installed = true,
-		    collect_status = 'ok',
-		    collect_error = '',
-		    last_collected_at = $2::timestamptz,
-		    agent_last_seen_at = $2::timestamptz,
-		    next_collect_at = CASE
-		        WHEN $3::boolean THEN $2::timestamptz + make_interval(secs => collect_interval_seconds)
-		        ELSE $2::timestamptz + interval '20 seconds'
-		    END,
-		    updated_at = now()
-		WHERE id = $1
-	`, metric.ServerID, metric.CollectedAt, scheduleNext)
-	return err
+	return r.metricStore().Save(ctx, metric, false)
 }
 
 type connectionScanner interface {
@@ -647,36 +478,6 @@ func scanConnection(row connectionScanner) (Connection, error) {
 		item.Metric = &metric
 	}
 	return item, nil
-}
-
-func (r *Repository) resolveSecrets(ctx context.Context, item Connection) Connection {
-	if r.secrets == nil {
-		return item
-	}
-	if item.PasswordSecretID != "" {
-		if value, err := r.secrets.Get(ctx, item.PasswordSecretID); err == nil {
-			item.Password = value
-		}
-	}
-	if item.PrivateKeySecretID != "" {
-		if value, err := r.secrets.Get(ctx, item.PrivateKeySecretID); err == nil {
-			item.PrivateKey = value
-		}
-	}
-	return item
-}
-
-func (r *Repository) deleteSecrets(ctx context.Context, item Connection) error {
-	if r.secrets == nil {
-		return nil
-	}
-	if item.PasswordSecretID != "" {
-		_ = r.secrets.Delete(ctx, item.PasswordSecretID)
-	}
-	if item.PrivateKeySecretID != "" {
-		_ = r.secrets.Delete(ctx, item.PrivateKeySecretID)
-	}
-	return nil
 }
 
 func nullFloat(value sql.NullFloat64) float64 {

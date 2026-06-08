@@ -1,7 +1,6 @@
 package servers
 
 import (
-	"bufio"
 	"context"
 	"strings"
 	"time"
@@ -10,70 +9,31 @@ import (
 )
 
 type Collector struct {
-	repository *Repository
-	ssh        *SSHExecutor
-	probe      *AgentProbe
+	repository  *Repository
+	ssh         *SSHExecutor
+	coordinator *ProbeCoordinator
 }
 
 func NewCollector(repository *Repository) *Collector {
 	sshExecutor := NewSSHExecutor(20 * time.Second)
+	probe := NewAgentProbe(sshExecutor)
 	return &Collector{
-		repository: repository,
-		ssh:        sshExecutor,
-		probe:      NewAgentProbe(sshExecutor),
+		repository:  repository,
+		ssh:         sshExecutor,
+		coordinator: NewProbeCoordinator(repository, probe),
 	}
 }
 
 func (c *Collector) CollectAll(ctx context.Context) {
-	items, err := c.repository.List(ctx)
-	if err != nil {
-		return
-	}
-	for _, item := range items {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		_ = c.Collect(ctx, item.ID)
-	}
+	c.coordinator.CollectAll(ctx)
 }
 
 func (c *Collector) Collect(ctx context.Context, id string) error {
-	item, err := c.repository.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
-		return err
-	}
-
-	metric, err := c.collect(ctx, item)
-	if err != nil {
-		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-		return err
-	}
-	return c.repository.SaveMetric(ctx, metric)
+	return c.coordinator.Collect(ctx, id)
 }
 
 func (c *Collector) Install(ctx context.Context, id string) error {
-	item, err := c.repository.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
-		return err
-	}
-	if err := c.probe.Install(ctx, item); err != nil {
-		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-		return err
-	}
-	metric, err := c.probe.Collect(ctx, item)
-	if err != nil {
-		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-		return err
-	}
-	return c.repository.SaveAgentMetric(ctx, metric)
+	return c.coordinator.Install(ctx, id)
 }
 
 func (c *Collector) RunCommand(ctx context.Context, id string, command string) (string, error) {
@@ -90,7 +50,7 @@ func (c *Collector) RunCommand(ctx context.Context, id string, command string) (
 }
 
 func (c *Collector) TouchMonitor(ctx context.Context, ttl time.Duration) error {
-	return c.repository.TouchMonitorActivity(ctx, ttl)
+	return c.coordinator.TouchMonitor(ctx, ttl)
 }
 
 func (c *Collector) Shell(ctx context.Context, id string) (*ssh.Client, *ssh.Session, error) {
@@ -119,64 +79,8 @@ func (c *Collector) Shell(ctx context.Context, id string) (*ssh.Client, *ssh.Ses
 	return client, session, nil
 }
 
-func (c *Collector) collect(ctx context.Context, item Connection) (Metric, error) {
-	if err := c.probe.Install(ctx, item); err != nil {
-		return Metric{}, err
-	}
-	return c.probe.Collect(ctx, item)
-}
-
 func (c *Collector) CollectAgentLoop(ctx context.Context, id string) error {
-	item, err := c.repository.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
-		return err
-	}
-
-	conn, err := c.probe.Dial(ctx, item)
-	if err != nil {
-		if err := c.probe.Install(ctx, item); err != nil {
-			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-			return err
-		}
-		conn, err = c.probe.Dial(ctx, item)
-	}
-	if err != nil {
-		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-		return err
-	}
-	defer conn.Close()
-	reader := bufio.NewReader(conn)
-
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		active, err := c.repository.MonitorActive(ctx)
-		if err != nil {
-			return err
-		}
-		if !active {
-			return nil
-		}
-
-		metric, err := c.probe.CollectConn(ctx, item, conn, reader)
-		if err != nil {
-			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-			return err
-		}
-		if err := c.repository.SaveAgentMetric(ctx, metric); err != nil {
-			return err
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	return c.coordinator.CollectAgentLoop(ctx, id)
 }
 
 func trimError(err error) string {
