@@ -339,6 +339,20 @@ func (r *Runner) newRegisteredJob(jobType string, payload map[string]any) (queue
 	return job, nil
 }
 
+func (r *Runner) newServerCollectJob(serverID string) (queue.Job, error) {
+	job, err := r.newRegisteredJob("server.collect", map[string]any{"server_id": serverID})
+	if err != nil {
+		return queue.Job{}, err
+	}
+	job.IdempotencyKey = serverCollectIdempotencyKey(serverID)
+	job.Normalize()
+	return job, nil
+}
+
+func serverCollectIdempotencyKey(serverID string) string {
+	return "server.collect:" + serverID
+}
+
 func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {
 	repository := servers.NewRepository(r.runtime.DB)
 	ticker := time.NewTicker(time.Second)
@@ -364,12 +378,16 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 		return
 	}
 	for _, item := range items {
-		job, err := r.newRegisteredJob("server.collect", map[string]any{"server_id": item.ID})
+		job, err := r.newServerCollectJob(item.ID)
 		if err != nil {
 			r.runtime.Logger.Error("create server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
 		}
 		if err := r.runtime.Queue.Enqueue(ctx, r.runtime.Config.Worker.QueueName, job); err != nil {
+			if errors.Is(err, queue.ErrDuplicateIdempotencyKey) {
+				r.runtime.Logger.Info("server collect job already queued", zap.String("server_id", item.ID), zap.String("idempotency_key", job.IdempotencyKey))
+				continue
+			}
 			r.runtime.Logger.Error("enqueue server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
 		}

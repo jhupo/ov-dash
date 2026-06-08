@@ -71,6 +71,33 @@ func TestNewRegisteredJobFallsBackToQueueDefault(t *testing.T) {
 	}
 }
 
+func TestNewServerCollectJobSetsStableIdempotencyKey(t *testing.T) {
+	registry := platformmodule.NewJobRegistry()
+	if err := registry.Register(platformmodule.JobDefinition{
+		Type:        "server.collect",
+		MaxAttempts: 5,
+		Handler:     fakeJobHandler{},
+	}); err != nil {
+		t.Fatalf("register job: %v", err)
+	}
+
+	runner := &Runner{jobs: registry}
+	job, err := runner.newServerCollectJob("srv_1")
+	if err != nil {
+		t.Fatalf("newServerCollectJob returned error: %v", err)
+	}
+
+	if job.IdempotencyKey != "server.collect:srv_1" {
+		t.Fatalf("IdempotencyKey = %q, want server.collect:srv_1", job.IdempotencyKey)
+	}
+	if job.Payload["server_id"] != "srv_1" {
+		t.Fatalf("server_id payload = %v, want srv_1", job.Payload["server_id"])
+	}
+	if job.MaxAttempts != 5 {
+		t.Fatalf("MaxAttempts = %d, want 5", job.MaxAttempts)
+	}
+}
+
 type fakeJobHandler struct{}
 
 func (fakeJobHandler) Handle(context.Context, queue.Job) error {
