@@ -1,13 +1,14 @@
 import { useEffect } from 'react'
 import { z } from 'zod'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm } from 'react-hook-form'
-import { toast } from 'sonner'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getProxySettings,
   updateProxySettings,
 } from '@/services/proxy-settings'
+import { toast } from 'sonner'
+import { useCan } from '@/hooks/use-can'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -46,6 +47,8 @@ const defaultValues: ProxyFormValues = {
 
 export function ProxyForm() {
   const queryClient = useQueryClient()
+  const can = useCan()
+  const canWriteProxy = can('proxy:write')
   const proxySettings = useQuery({
     queryKey: ['proxy-settings'],
     queryFn: getProxySettings,
@@ -81,6 +84,8 @@ export function ProxyForm() {
   })
 
   function onSubmit(data: ProxyFormValues) {
+    if (!canWriteProxy) return
+
     const host = data.host.trim()
 
     mutation.mutate({
@@ -104,7 +109,11 @@ export function ProxyForm() {
               <FormItem>
                 <FormLabel>主机</FormLabel>
                 <FormControl>
-                  <Input placeholder='127.0.0.1' autoComplete='off' {...field} />
+                  <Input
+                    placeholder='127.0.0.1'
+                    autoComplete='off'
+                    {...field}
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -156,9 +165,7 @@ export function ProxyForm() {
                     type='password'
                     autoComplete='new-password'
                     placeholder={
-                      proxySettings.data?.has_password
-                        ? '留空则保持原密码'
-                        : ''
+                      proxySettings.data?.has_password ? '留空则保持原密码' : ''
                     }
                     {...field}
                   />
@@ -191,7 +198,9 @@ export function ProxyForm() {
 
         <Button
           type='submit'
-          disabled={proxySettings.isLoading || mutation.isPending}
+          disabled={
+            !canWriteProxy || proxySettings.isLoading || mutation.isPending
+          }
         >
           保存代理设置
         </Button>

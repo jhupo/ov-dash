@@ -9,6 +9,8 @@ import (
 	"ov-dash/backend/internal/db"
 	"ov-dash/backend/internal/events"
 	"ov-dash/backend/internal/modules/proxy"
+	"ov-dash/backend/internal/platform/audit"
+	"ov-dash/backend/internal/platform/secret"
 	"ov-dash/backend/internal/queue"
 	"ov-dash/backend/pkg/logging"
 
@@ -24,10 +26,15 @@ type Runtime struct {
 	Events     *events.Bus
 	Logger     *zap.Logger
 	Proxy      *proxy.Service
+	Secrets    *secret.Store
+	Audit      *audit.Recorder
 }
 
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	logger := logging.New(cfg.App.Env)
+	if cfg.Security.UsesDefaultSecretKey() && cfg.App.Env != "local" {
+		logger.Warn("APP_SECRET_KEY uses the local default value; configure a stable private secret key")
+	}
 
 	pg, err := db.Open(ctx, cfg.Postgres)
 	if err != nil {
@@ -45,6 +52,8 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	eventBus := events.NewBus(logger)
 	eventBus.SubscribeAll(events.LogHandler(logger))
 
+	secrets := secret.NewStore(pg, cfg.Security.SecretKey)
+
 	return &Runtime{
 		Config:     cfg,
 		DB:         pg,
@@ -53,7 +62,9 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		Migrations: database.NewMigrationRunner(pg),
 		Events:     eventBus,
 		Logger:     logger,
-		Proxy:      proxy.NewService(proxy.NewRepository(pg)),
+		Proxy:      proxy.NewService(proxy.NewRepositoryWithSecrets(pg, secrets)),
+		Secrets:    secrets,
+		Audit:      audit.NewRecorder(pg),
 	}, nil
 }
 

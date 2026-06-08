@@ -18,6 +18,9 @@ import {
 type SidebarGroupId = 'general' | 'pages' | 'other'
 type SettingsSection = 'system' | 'profile'
 
+export type Capability = `${string}:${string}`
+export type CapabilityChecker = (capability: Capability) => boolean
+
 export type FrontendModuleId =
   | 'dashboard'
   | 'tasks'
@@ -52,6 +55,7 @@ export type FrontendModuleManifest = {
     section: SettingsSection
     order: number
   }
+  permissions?: Capability[]
 }
 
 export type ModuleNavigationItem = {
@@ -86,6 +90,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '仪表盘',
     path: '/',
     icon: LayoutDashboard,
+    permissions: ['dashboard:read'],
     sidebar: { groupId: 'general', order: 10 },
     command: { enabled: true },
   },
@@ -94,6 +99,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '任务',
     path: '/tasks',
     icon: ListTodo,
+    permissions: ['tasks:read'],
     sidebar: { groupId: 'general', order: 20 },
     command: { enabled: true },
   },
@@ -102,6 +108,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '应用',
     path: '/apps',
     icon: Package,
+    permissions: ['apps:read'],
     sidebar: { groupId: 'general', order: 30 },
     command: { enabled: true },
   },
@@ -110,6 +117,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '用户',
     path: '/users',
     icon: Users,
+    permissions: ['users:read'],
     sidebar: { groupId: 'general', order: 40 },
     command: { enabled: true },
   },
@@ -118,6 +126,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '资料库',
     path: '/wiki',
     icon: BookOpen,
+    permissions: ['wiki:read'],
     sidebar: { groupId: 'general', order: 50 },
     command: { enabled: true },
   },
@@ -126,6 +135,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '服务器状态',
     path: '/server-status',
     icon: Server,
+    permissions: ['servers:read'],
     sidebar: { groupId: 'pages', order: 10 },
     command: { enabled: true },
   },
@@ -142,6 +152,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '代理',
     path: '/settings/proxy',
     icon: Route,
+    permissions: ['proxy:read'],
     sidebar: { groupId: 'other', parentId: 'settings', order: 10 },
     command: { enabled: true },
     settings: { section: 'system', order: 10 },
@@ -151,6 +162,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '服务器',
     path: '/settings/servers',
     icon: Server,
+    permissions: ['servers:read'],
     sidebar: { groupId: 'other', parentId: 'settings', order: 20 },
     command: { enabled: true },
     settings: { section: 'system', order: 20 },
@@ -185,6 +197,7 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     title: '通知',
     path: '/settings/notifications',
     icon: Bell,
+    permissions: ['notifications:read'],
     sidebar: { groupId: 'other', parentId: 'settings', order: 30 },
     command: { enabled: true },
     settings: { section: 'system', order: 30 },
@@ -207,7 +220,9 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
   },
 ]
 
-export function getSidebarNavGroups(): ModuleNavigationGroup[] {
+export function getSidebarNavGroups(
+  can?: CapabilityChecker
+): ModuleNavigationGroup[] {
   const sidebarModules = frontendModuleManifests
     .filter((module) => module.sidebar)
     .sort((a, b) => a.sidebar!.order - b.sidebar!.order)
@@ -218,14 +233,18 @@ export function getSidebarNavGroups(): ModuleNavigationGroup[] {
         (module) => module.sidebar?.groupId === groupId
       )
       const parentModules = groupModules.filter(
-        (module) => !module.sidebar?.parentId
+        (module) => !module.sidebar?.parentId && isModuleVisible(module, can)
       )
 
       return {
         title: sidebarGroupTitles[groupId],
         items: parentModules.map((module) => {
           const children = groupModules
-            .filter((child) => child.sidebar?.parentId === module.id)
+            .filter(
+              (child) =>
+                child.sidebar?.parentId === module.id &&
+                isModuleVisible(child, can)
+            )
             .map(toNavigationItem)
 
           return {
@@ -238,15 +257,21 @@ export function getSidebarNavGroups(): ModuleNavigationGroup[] {
     .filter((group) => group.items.length > 0)
 }
 
-export function getCommandNavGroups(): ModuleNavigationGroup[] {
-  return getSidebarNavGroups()
+export function getCommandNavGroups(
+  can?: CapabilityChecker
+): ModuleNavigationGroup[] {
+  return getSidebarNavGroups(can)
 }
 
 export function getSettingsNavItems(
-  section: SettingsSection
+  section: SettingsSection,
+  can?: CapabilityChecker
 ): SettingsNavigationItem[] {
   return frontendModuleManifests
-    .filter((module) => module.settings?.section === section)
+    .filter(
+      (module) =>
+        module.settings?.section === section && isModuleVisible(module, can)
+    )
     .sort((a, b) => a.settings!.order - b.settings!.order)
     .map((module) => ({
       title: module.title,
@@ -262,10 +287,43 @@ export function isSystemSettingsPath(pathname: string) {
   )
 }
 
-function toNavigationItem(module: FrontendModuleManifest): ModuleNavigationItem {
+export function getModuleForPath(pathname: string) {
+  return [...frontendModuleManifests]
+    .sort((a, b) => b.path.length - a.path.length)
+    .find((module) => {
+      if (module.path === '/') {
+        return pathname === '/'
+      }
+      return pathname === module.path || pathname.startsWith(`${module.path}/`)
+    })
+}
+
+export function canAccessModule(
+  module: FrontendModuleManifest | undefined,
+  can: CapabilityChecker
+) {
+  if (!module) {
+    return true
+  }
+  return isModuleVisible(module, can)
+}
+
+function toNavigationItem(
+  module: FrontendModuleManifest
+): ModuleNavigationItem {
   return {
     title: module.title,
     path: module.path,
     icon: module.icon,
   }
+}
+
+function isModuleVisible(
+  module: FrontendModuleManifest,
+  can?: CapabilityChecker
+) {
+  if (!module.permissions?.length || !can) {
+    return true
+  }
+  return module.permissions.every((permission) => can(permission))
 }

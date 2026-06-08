@@ -58,23 +58,24 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) Name() string {
+func (Module) ID() string {
 	return "servers"
 }
 
-func (Module) RegisterRoutes(ctx platformmodule.Context) {
-	repository := NewRepository(ctx.DB)
+func (Module) RegisterHTTP(ctx platformmodule.Context) {
+	repository := NewRepositoryWithSecrets(ctx.DB, ctx.Secrets)
 	handler := &Handler{
 		service:   NewService(repository),
 		collector: NewCollector(repository),
 		cache:     ctx.Cache,
 	}
+	readServers := ctx.RequireCapability(capability.ServersRead)
 	writeServers := ctx.RequireCapability(capability.ServersWrite)
 	deleteServers := ctx.RequireCapability(capability.ServersDelete)
 	sshServers := ctx.RequireCapability(capability.ServersSSH)
 
-	ctx.ProtectedRouter.Get("/server-connections", handler.List)
-	ctx.ProtectedRouter.Get("/server-connections/{id}/metrics", handler.Metrics)
+	ctx.ProtectedRouter.With(readServers).Get("/server-connections", handler.List)
+	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/metrics", handler.Metrics)
 	ctx.ProtectedRouter.With(writeServers).Post("/server-connections/monitor/touch", handler.TouchMonitor)
 	ctx.ProtectedRouter.With(writeServers).Post("/server-connections", handler.Save)
 	ctx.ProtectedRouter.With(writeServers).Put("/server-connections/{id}", handler.Save)
@@ -83,6 +84,15 @@ func (Module) RegisterRoutes(ctx platformmodule.Context) {
 	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/ticket", handler.IssueShellTicket)
 	ctx.PublicRouter.Get("/server-connections/{id}/ssh/ws", handler.Shell)
 	ctx.ProtectedRouter.With(deleteServers).Delete("/server-connections/{id}", handler.Delete)
+}
+
+func (Module) Capabilities() []capability.Capability {
+	return []capability.Capability{
+		capability.ServersRead,
+		capability.ServersWrite,
+		capability.ServersDelete,
+		capability.ServersSSH,
+	}
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

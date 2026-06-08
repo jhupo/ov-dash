@@ -1,18 +1,32 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
-import { useAuthStore } from '@/stores/auth-store'
 import { getCurrentUser } from '@/services/auth'
+import { canAccessModule, getModuleForPath } from '@/services/module-registry'
+import { useAuthStore } from '@/stores/auth-store'
+import { roleAllows } from '@/hooks/use-can'
+import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 
 export const Route = createFileRoute('/_authenticated')({
   beforeLoad: async ({ location }) => {
+    let user: Awaited<ReturnType<typeof getCurrentUser>>
     try {
-      const user = await getCurrentUser()
-      useAuthStore.getState().auth.setUser(user)
+      user = await getCurrentUser()
     } catch {
       useAuthStore.getState().auth.reset()
       throw redirect({
         to: '/sign-in',
         search: { redirect: location.href },
+      })
+    }
+
+    useAuthStore.getState().auth.setUser(user)
+    const module = getModuleForPath(location.pathname)
+    if (
+      !canAccessModule(module, (capability) =>
+        roleAllows(user.role, capability)
+      )
+    ) {
+      throw redirect({
+        to: '/403',
       })
     }
   },

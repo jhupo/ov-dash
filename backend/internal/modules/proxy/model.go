@@ -5,14 +5,15 @@ import "time"
 const DefaultSettingsID = "default"
 
 type Settings struct {
-	ID        string    `json:"id"`
-	Enabled   bool      `json:"enabled"`
-	Scheme    string    `json:"scheme"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
-	Username  string    `json:"username"`
-	Password  string    `json:"-"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	Enabled          bool      `json:"enabled"`
+	Scheme           string    `json:"scheme"`
+	Host             string    `json:"host"`
+	Port             int       `json:"port"`
+	Username         string    `json:"username"`
+	Password         string    `json:"-"`
+	PasswordSecretID string    `json:"-"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type PublicSettings struct {

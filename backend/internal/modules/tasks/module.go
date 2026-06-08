@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
 )
@@ -22,14 +23,21 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) Name() string {
+func (Module) ID() string {
 	return "tasks"
 }
 
-func (Module) RegisterRoutes(ctx platformmodule.Context) {
+func (Module) RegisterHTTP(ctx platformmodule.Context) {
 	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
-	ctx.ProtectedRouter.Get("/tasks", handler.List)
-	ctx.ProtectedRouter.Delete("/tasks", handler.Delete)
+	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.TasksRead)).Get("/tasks", handler.List)
+	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.TasksWrite)).Delete("/tasks", handler.Delete)
+}
+
+func (Module) Capabilities() []capability.Capability {
+	return []capability.Capability{
+		capability.TasksRead,
+		capability.TasksWrite,
+	}
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

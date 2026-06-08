@@ -3,6 +3,7 @@ package users
 import (
 	"net/http"
 
+	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
 )
@@ -17,13 +18,17 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) Name() string {
+func (Module) ID() string {
 	return "users"
 }
 
-func (Module) RegisterRoutes(ctx platformmodule.Context) {
+func (Module) RegisterHTTP(ctx platformmodule.Context) {
 	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
-	ctx.ProtectedRouter.Get("/users", handler.List)
+	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.UsersRead)).Get("/users", handler.List)
+}
+
+func (Module) Capabilities() []capability.Capability {
+	return []capability.Capability{capability.UsersRead}
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"ov-dash/backend/internal/modules/auth"
-	"ov-dash/backend/internal/modules/notifications"
-	"ov-dash/backend/internal/modules/wiki"
 	"ov-dash/backend/internal/platform"
 	"ov-dash/backend/internal/platform/capability"
 	platformmodule "ov-dash/backend/internal/platform/module"
+	platformsettings "ov-dash/backend/internal/platform/settings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
 )
 
 func NewRouter(runtime *platform.Runtime) http.Handler {
@@ -35,45 +35,54 @@ func NewRouter(runtime *platform.Runtime) http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		authService := auth.NewService(auth.NewRepository(runtime.DB))
-		protectedRouter := r.With(authMiddleware(authService))
-		telegramNotifications := NewTelegramNotificationsHandler(
-			notifications.NewService(
-				notifications.NewRepository(runtime.DB),
-				notifications.NewProxiedTelegramClient(runtime.Proxy),
-			),
-		)
-		wikiPages := NewWikiHandler(
-			wiki.NewService(wiki.NewRepository(runtime.DB)),
-			runtime.Config.Uploads.WikiDir,
-		)
+		protectedRouter := r.With(authMiddleware(authService), auditMiddleware(runtime.Audit))
 		policy := capability.DefaultRolePolicy()
 		requireCapability := func(value capability.Capability) func(http.Handler) http.Handler {
 			return capability.RequireCapability(policy, currentCapabilityUser, value)
 		}
 
+		modules := defaultRegistry()
+		settingsRegistry, err := modules.SettingsRegistry()
+		if err != nil {
+			runtime.Logger.Error("register platform settings schema", zap.Error(err))
+			settingsRegistry = platformsettings.NewRegistry()
+		}
+		settingsHandler := platformsettings.NewHandler(
+			settingsRegistry,
+			platformsettings.NewStore(runtime.DB, runtime.Secrets),
+		)
+
+		jobRegistry := platformmodule.NewJobRegistry()
+		if err := modules.RegisterJobs(platformmodule.Context{
+			Config:  runtime.Config,
+			DB:      runtime.DB,
+			Queue:   runtime.Queue,
+			Cache:   runtime.Cache,
+			Events:  runtime.Events,
+			Logger:  runtime.Logger,
+			Secrets: runtime.Secrets,
+			Audit:   runtime.Audit,
+		}, jobRegistry); err != nil {
+			runtime.Logger.Error("register platform job metadata", zap.Error(err))
+		}
+
 		r.Get("/health", health.Readiness)
-		r.Post("/incoming-messages", telegramNotifications.IncomingMessage)
+		protectedRouter.With(requireCapability(capability.PlatformRead)).Get("/platform/modules", platformModulesHandler(modules, jobRegistry))
+		protectedRouter.With(requireCapability(capability.PlatformRead)).Get("/platform/health", platformHealthHandler(runtime, modules))
+		protectedRouter.With(requireCapability(capability.SettingsRead)).Get("/platform/settings/schema", settingsHandler.Schema)
+		protectedRouter.With(requireCapability(capability.SettingsRead)).Get("/platform/settings/{key}", settingsHandler.Get)
+		protectedRouter.With(requireCapability(capability.SettingsWrite)).Put("/platform/settings/{key}", settingsHandler.Put)
 
-		protectedRouter.Get("/telegram-notifications/settings", telegramNotifications.GetSettings)
-		protectedRouter.Put("/telegram-notifications/settings", telegramNotifications.UpdateSettings)
-		protectedRouter.Get("/telegram-notifications/users", telegramNotifications.ListUserSettings)
-		protectedRouter.Put("/telegram-notifications/users/{userID}", telegramNotifications.UpdateUserSettings)
-		protectedRouter.Get("/wiki/pages", wikiPages.ListPages)
-		protectedRouter.Post("/wiki/pages", wikiPages.CreatePage)
-		protectedRouter.Get("/wiki/pages/{id}", wikiPages.GetPage)
-		protectedRouter.Put("/wiki/pages/{id}", wikiPages.UpdatePage)
-		protectedRouter.Delete("/wiki/pages/{id}", wikiPages.DeletePage)
-		protectedRouter.Get("/wiki/pages/{id}/revisions", wikiPages.ListRevisions)
-		protectedRouter.Post("/wiki/attachments", wikiPages.UploadAttachment)
-		protectedRouter.Get("/wiki/attachments/{id}/raw", wikiPages.AttachmentRaw)
-
-		defaultRegistry().RegisterRoutes(platformmodule.Context{
+		modules.RegisterHTTP(platformmodule.Context{
 			Config:            runtime.Config,
 			DB:                runtime.DB,
 			Queue:             runtime.Queue,
 			Cache:             runtime.Cache,
 			Events:            runtime.Events,
 			Logger:            runtime.Logger,
+			Secrets:           runtime.Secrets,
+			Audit:             runtime.Audit,
+			Jobs:              jobRegistry,
 			PublicRouter:      r,
 			ProtectedRouter:   protectedRouter,
 			RequireCapability: requireCapability,

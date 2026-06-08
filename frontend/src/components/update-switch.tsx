@@ -1,14 +1,6 @@
 import axios from 'axios'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  CheckCircle2,
-  CloudUpload,
-  RefreshCw,
-  RotateCw,
-  UploadCloud,
-} from 'lucide-react'
-import { toast } from 'sonner'
-import {
   applyUpdate,
   checkUpdate,
   getUpdateStatus,
@@ -16,6 +8,15 @@ import {
   type UpdateRun,
   type UpdateStatus,
 } from '@/services/updates'
+import {
+  CheckCircle2,
+  CloudUpload,
+  RefreshCw,
+  RotateCw,
+  UploadCloud,
+} from 'lucide-react'
+import { toast } from 'sonner'
+import { useCan } from '@/hooks/use-can'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -25,6 +26,8 @@ import {
 
 export function UpdateSwitch() {
   const queryClient = useQueryClient()
+  const can = useCan()
+  const canApplyUpdate = can('updates:apply')
   const status = useQuery({
     queryKey: ['updates'],
     queryFn: getUpdateStatus,
@@ -70,8 +73,10 @@ export function UpdateSwitch() {
     checkMutation.isPending ||
     applyMutation.isPending ||
     restartMutation.isPending
-  const canApply = Boolean(value?.hasUpdate && !busy && !isActiveUpdate(update))
-  const canRestart = update?.status === 'ready' && !busy
+  const canApply = Boolean(
+    canApplyUpdate && value?.hasUpdate && !busy && !isActiveUpdate(update)
+  )
+  const canRestart = canApplyUpdate && update?.status === 'ready' && !busy
   const showUpdatePanel =
     Boolean(value?.hasUpdate) || Boolean(update && update.status !== 'success')
 
@@ -116,7 +121,7 @@ export function UpdateSwitch() {
 
             <div className='mt-3 space-y-1'>
               <div className='text-xs text-muted-foreground'>当前版本</div>
-              <div className='break-all font-mono text-base font-semibold leading-5'>
+              <div className='font-mono text-base leading-5 font-semibold break-all'>
                 {versionText(value)}
               </div>
               <div className='flex items-center gap-1.5 text-xs text-muted-foreground'>
@@ -136,8 +141,10 @@ export function UpdateSwitch() {
               {value?.hasUpdate && (
                 <div className='space-y-2'>
                   <div className='space-y-1'>
-                    <div className='text-xs text-muted-foreground'>更新版本</div>
-                    <div className='break-all font-mono text-base font-semibold leading-5'>
+                    <div className='text-xs text-muted-foreground'>
+                      更新版本
+                    </div>
+                    <div className='font-mono text-base leading-5 font-semibold break-all'>
                       {value.latestVersion}
                     </div>
                   </div>
@@ -161,7 +168,7 @@ export function UpdateSwitch() {
                 <Button
                   type='button'
                   className='h-9 w-full'
-                  disabled={restartMutation.isPending}
+                  disabled={!canApplyUpdate || restartMutation.isPending}
                   onClick={() => restartMutation.mutate()}
                 >
                   <RotateCw className='size-4' />

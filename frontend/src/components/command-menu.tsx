@@ -1,9 +1,10 @@
 import React from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { getCommandNavGroups } from '@/services/module-registry'
 import { ArrowRight, ChevronRight, Laptop, Moon, Sun } from 'lucide-react'
 import { useSearch } from '@/context/search-provider'
 import { useTheme } from '@/context/theme-provider'
-import { getCommandNavGroups } from '@/services/module-registry'
+import { useCan } from '@/hooks/use-can'
 import {
   CommandDialog,
   CommandEmpty,
@@ -19,6 +20,8 @@ export function CommandMenu() {
   const navigate = useNavigate()
   const { setTheme } = useTheme()
   const { open, setOpen } = useSearch()
+  const can = useCan()
+  const commandNavGroups = React.useMemo(() => getCommandNavGroups(can), [can])
 
   const runCommand = React.useCallback(
     (command: () => unknown) => {
@@ -34,7 +37,7 @@ export function CommandMenu() {
       <CommandList>
         <ScrollArea type='hover' className='h-72 pe-1'>
           <CommandEmpty>未找到结果。</CommandEmpty>
-          {getCommandNavGroups().map((group) => (
+          {commandNavGroups.map((group) => (
             <CommandGroup key={group.title} heading={group.title}>
               {group.items.map((navItem, i) => {
                 if (!navItem.children?.length) {

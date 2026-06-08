@@ -30,9 +30,18 @@ func main() {
 	}
 	defer runtime.Close()
 
-	if err := runtime.Migrations.ApplyDir(ctx, cfg.Migrations.Dir); err != nil {
+	migrationSummary, err := runtime.Migrations.ApplyDir(ctx, cfg.Migrations.Dir)
+	if err != nil {
 		runtime.Logger.Fatal("apply migrations", zap.Error(err))
 	}
+	platform.LogMigrationSummary(runtime.Logger, migrationSummary)
+
+	secretSummary, err := runtime.BackfillLegacySecrets(ctx)
+	if err != nil {
+		runtime.Logger.Fatal("backfill legacy secrets", zap.Error(err))
+	}
+	platform.LogSecretBackfillSummary(runtime.Logger, secretSummary)
+
 	if err := auth.NewService(auth.NewRepository(runtime.DB)).EnsureDefaultAdmin(ctx); err != nil {
 		runtime.Logger.Fatal("ensure default admin", zap.Error(err))
 	}

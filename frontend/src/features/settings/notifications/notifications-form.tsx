@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react'
 import { z } from 'zod'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { Send, Save } from 'lucide-react'
 import { useForm } from 'react-hook-form'
-import { toast } from 'sonner'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   getTelegramNotificationSettings,
   getUserTelegramNotificationSettings,
@@ -12,6 +10,9 @@ import {
   updateUserTelegramNotificationSettings,
   type UserTelegramNotificationSettings,
 } from '@/services/telegram-notifications'
+import { Send, Save } from 'lucide-react'
+import { toast } from 'sonner'
+import { useCan } from '@/hooks/use-can'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -58,6 +59,8 @@ const defaultValues: TelegramFormValues = {
 
 export function NotificationsForm() {
   const queryClient = useQueryClient()
+  const can = useCan()
+  const canWriteNotifications = can('notifications:write')
   const settings = useQuery({
     queryKey: ['telegram-notifications', 'settings'],
     queryFn: getTelegramNotificationSettings,
@@ -101,6 +104,8 @@ export function NotificationsForm() {
   })
 
   function onSubmit(data: TelegramFormValues) {
+    if (!canWriteNotifications) return
+
     settingsMutation.mutate({
       enabled: data.enabled,
       ...(data.botToken.trim() ? { bot_token: data.botToken.trim() } : {}),
@@ -132,7 +137,8 @@ export function NotificationsForm() {
                     启用 Telegram 上报
                   </FormLabel>
                   <FormDescription>
-                    外部消息传入后，系统会发送到指定用户或配置好的 Telegram 群组。
+                    外部消息传入后，系统会发送到指定用户或配置好的 Telegram
+                    群组。
                   </FormDescription>
                 </div>
                 <FormControl>
@@ -238,7 +244,8 @@ export function NotificationsForm() {
                     />
                   </FormControl>
                   <FormDescription>
-                    把 Bot 拉进群组后填写群组或超级群 Chat ID，通常以 -100 开头。
+                    把 Bot 拉进群组后填写群组或超级群 Chat ID，通常以 -100
+                    开头。
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -296,7 +303,11 @@ export function NotificationsForm() {
 
           <Button
             type='submit'
-            disabled={settings.isLoading || settingsMutation.isPending}
+            disabled={
+              !canWriteNotifications ||
+              settings.isLoading ||
+              settingsMutation.isPending
+            }
           >
             <Save className='me-2 size-4' />
             保存 Telegram 配置
@@ -307,6 +318,7 @@ export function NotificationsForm() {
       <UserTelegramSettingsTable
         items={users.data ?? []}
         loading={users.isLoading}
+        canWrite={canWriteNotifications}
       />
     </div>
   )
@@ -315,9 +327,11 @@ export function NotificationsForm() {
 function UserTelegramSettingsTable({
   items,
   loading,
+  canWrite,
 }: {
   items: UserTelegramNotificationSettings[]
   loading: boolean
+  canWrite: boolean
 }) {
   const queryClient = useQueryClient()
   const [drafts, setDrafts] = useState<
@@ -374,7 +388,8 @@ function UserTelegramSettingsTable({
       <div className='space-y-1'>
         <h3 className='text-lg font-medium'>用户 Telegram 映射</h3>
         <p className='text-sm text-muted-foreground'>
-          每个系统用户配置一个 Telegram Chat ID。入站消息指定用户后，会发送到这里绑定的账号。
+          每个系统用户配置一个 Telegram Chat
+          ID。入站消息指定用户后，会发送到这里绑定的账号。
         </p>
       </div>
 
@@ -442,7 +457,7 @@ function UserTelegramSettingsTable({
                     <Button
                       type='button'
                       size='sm'
-                      disabled={mutation.isPending}
+                      disabled={!canWrite || mutation.isPending}
                       onClick={() =>
                         mutation.mutate({
                           userId: item.user_id,

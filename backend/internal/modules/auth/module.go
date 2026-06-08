@@ -37,11 +37,11 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) Name() string {
+func (Module) ID() string {
 	return "auth"
 }
 
-func (Module) RegisterRoutes(ctx platformmodule.Context) {
+func (Module) RegisterHTTP(ctx platformmodule.Context) {
 	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
 
 	ctx.PublicRouter.Post("/auth/login", handler.Login)

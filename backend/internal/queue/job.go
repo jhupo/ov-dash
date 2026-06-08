@@ -4,19 +4,26 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 )
 
 type Job struct {
-	ID          string         `json:"id"`
-	Type        string         `json:"type"`
-	Payload     map[string]any `json:"payload"`
-	Attempts    int            `json:"attempts"`
-	MaxAttempts int            `json:"max_attempts"`
-	CreatedAt   time.Time      `json:"created_at"`
+	ID             string         `json:"id"`
+	Type           string         `json:"type"`
+	Payload        map[string]any `json:"payload"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	Attempts       int            `json:"attempts"`
+	MaxAttempts    int            `json:"max_attempts"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 const DefaultMaxAttempts = 3
+
+var (
+	ErrDuplicateIdempotencyKey = errors.New("duplicate idempotency key")
+	ErrJobNotRequeueable       = errors.New("job is not requeueable")
+)
 
 func NewJob(jobType string, payload map[string]any) (Job, error) {
 	if jobType == "" {
@@ -41,6 +48,7 @@ func NewJob(jobType string, payload map[string]any) (Job, error) {
 }
 
 func (j *Job) Normalize() {
+	j.IdempotencyKey = strings.TrimSpace(j.IdempotencyKey)
 	if j.Payload == nil {
 		j.Payload = map[string]any{}
 	}

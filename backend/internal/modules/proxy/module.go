@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 
+	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
+	"ov-dash/backend/internal/platform/settings"
 )
 
 type Module struct{}
@@ -28,14 +30,71 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) Name() string {
+func (Module) ID() string {
 	return "proxy"
 }
 
-func (Module) RegisterRoutes(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
-	ctx.ProtectedRouter.Get("/proxy-settings", handler.Get)
-	ctx.ProtectedRouter.Put("/proxy-settings", handler.Update)
+func (Module) RegisterHTTP(ctx platformmodule.Context) {
+	handler := &Handler{service: NewService(NewRepositoryWithSecrets(ctx.DB, ctx.Secrets))}
+	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ProxyRead)).Get("/proxy-settings", handler.Get)
+	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ProxyWrite)).Put("/proxy-settings", handler.Update)
+}
+
+func (Module) Capabilities() []capability.Capability {
+	return []capability.Capability{
+		capability.ProxyRead,
+		capability.ProxyWrite,
+	}
+}
+
+func (Module) SettingsSchemas() []settings.Schema {
+	minPort := 1.0
+	maxPort := 65535.0
+	return []settings.Schema{
+		{
+			Key:       "proxy.enabled",
+			Type:      settings.TypeBoolean,
+			Default:   false,
+			Writable:  true,
+			Sensitive: false,
+		},
+		{
+			Key:        "proxy.host",
+			Type:       settings.TypeString,
+			Default:    "",
+			Writable:   true,
+			Sensitive:  false,
+			Validation: settings.Validation{MaxLength: intPtr(255)},
+		},
+		{
+			Key:        "proxy.port",
+			Type:       settings.TypeInteger,
+			Default:    1080,
+			Writable:   true,
+			Sensitive:  false,
+			Validation: settings.Validation{Min: &minPort, Max: &maxPort},
+		},
+		{
+			Key:        "proxy.username",
+			Type:       settings.TypeString,
+			Default:    "",
+			Writable:   true,
+			Sensitive:  false,
+			Validation: settings.Validation{MaxLength: intPtr(255)},
+		},
+		{
+			Key:        "proxy.password",
+			Type:       settings.TypeString,
+			Default:    "",
+			Writable:   true,
+			Sensitive:  true,
+			Validation: settings.Validation{MaxLength: intPtr(4096)},
+		},
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {

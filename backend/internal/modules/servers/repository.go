@@ -7,23 +7,30 @@ import (
 	"time"
 
 	"ov-dash/backend/internal/db"
+	"ov-dash/backend/internal/platform/secret"
 
 	"github.com/jackc/pgx/v5"
 )
 
 type Repository struct {
-	db *db.Pool
+	db      *db.Pool
+	secrets *secret.Store
 }
 
 func NewRepository(db *db.Pool) *Repository {
 	return &Repository{db: db}
 }
 
+func NewRepositoryWithSecrets(db *db.Pool, secrets *secret.Store) *Repository {
+	return &Repository{db: db, secrets: secrets}
+}
+
 func (r *Repository) List(ctx context.Context) ([]Connection, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
+			c.password, c.private_key, c.password_secret_id, c.private_key_secret_id,
+			c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
 			c.collect_status, c.collect_error, c.last_collected_at, c.agent_last_seen_at, c.created_at, c.updated_at,
 			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
@@ -45,6 +52,7 @@ func (r *Repository) List(ctx context.Context) ([]Connection, error) {
 		if err != nil {
 			return nil, err
 		}
+		item = r.resolveSecrets(ctx, item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -54,7 +62,8 @@ func (r *Repository) Get(ctx context.Context, id string) (Connection, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
+			c.password, c.private_key, c.password_secret_id, c.private_key_secret_id,
+			c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
 			c.collect_status, c.collect_error, c.last_collected_at, c.agent_last_seen_at, c.created_at, c.updated_at,
 			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
 			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
@@ -65,17 +74,54 @@ func (r *Repository) Get(ctx context.Context, id string) (Connection, error) {
 		LEFT JOIN server_metrics m ON m.server_id = c.id
 		WHERE c.id = $1
 	`, id)
-	return scanConnection(row)
+	item, err := scanConnection(row)
+	if err != nil {
+		return Connection{}, err
+	}
+	return r.resolveSecrets(ctx, item), nil
 }
 
 func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, error) {
+	if input.ClearSecret && r.secrets != nil {
+		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "password")
+		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "private_key")
+	}
+
+	password := input.Password
+	privateKey := input.PrivateKey
+	passwordSecretID := ""
+	privateKeySecretID := ""
+	if input.Password != nil && r.secrets != nil && *input.Password != "" {
+		id, err := r.secrets.Put(ctx, "server_connections:"+input.ID, "password", *input.Password)
+		if err != nil {
+			return Connection{}, err
+		}
+		passwordSecretID = id
+		empty := ""
+		password = &empty
+	} else if input.Password != nil && r.secrets != nil {
+		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "password")
+	}
+	if input.PrivateKey != nil && r.secrets != nil && *input.PrivateKey != "" {
+		id, err := r.secrets.Put(ctx, "server_connections:"+input.ID, "private_key", *input.PrivateKey)
+		if err != nil {
+			return Connection{}, err
+		}
+		privateKeySecretID = id
+		empty := ""
+		privateKey = &empty
+	} else if input.PrivateKey != nil && r.secrets != nil {
+		_ = r.secrets.DeleteNamed(ctx, "server_connections:"+input.ID, "private_key")
+	}
+
 	var item Connection
 	err := r.db.QueryRow(ctx, `
 		INSERT INTO server_connections (
 			id, name, group_name, region, host, port, username, auth_type,
-			password, private_key, expires_at, collect_interval_seconds, next_collect_at
+			password, private_key, password_secret_id, private_key_secret_id,
+			expires_at, collect_interval_seconds, next_collect_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, ''), COALESCE($10, ''), $11, $13, now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, ''), COALESCE($10, ''), $11, $12, $13, $15, now())
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			group_name = EXCLUDED.group_name,
@@ -87,20 +133,31 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 			expires_at = EXCLUDED.expires_at,
 			collect_interval_seconds = EXCLUDED.collect_interval_seconds,
 			password = CASE
-				WHEN $12 THEN ''
+				WHEN $14 THEN ''
 				WHEN $9::text IS NULL THEN server_connections.password
 				ELSE EXCLUDED.password
 			END,
 			private_key = CASE
-				WHEN $12 THEN ''
+				WHEN $14 THEN ''
 				WHEN $10::text IS NULL THEN server_connections.private_key
 				ELSE EXCLUDED.private_key
+			END,
+			password_secret_id = CASE
+				WHEN $14 THEN ''
+				WHEN NOT $16::boolean THEN server_connections.password_secret_id
+				ELSE EXCLUDED.password_secret_id
+			END,
+			private_key_secret_id = CASE
+				WHEN $14 THEN ''
+				WHEN NOT $17::boolean THEN server_connections.private_key_secret_id
+				ELSE EXCLUDED.private_key_secret_id
 			END,
 			collect_status = 'pending',
 			collect_error = '',
 			updated_at = now()
 		RETURNING id, name, group_name, region, host, port, username, auth_type,
-		          password, private_key, expires_at, collect_interval_seconds, next_collect_at, collector_installed, agent_port,
+		          password, private_key, password_secret_id, private_key_secret_id,
+		          expires_at, collect_interval_seconds, next_collect_at, collector_installed, agent_port,
 		          collect_status, collect_error, last_collected_at, agent_last_seen_at, created_at, updated_at
 	`,
 		input.ID,
@@ -111,11 +168,15 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 		input.Port,
 		input.Username,
 		input.AuthType,
-		input.Password,
-		input.PrivateKey,
+		password,
+		privateKey,
+		passwordSecretID,
+		privateKeySecretID,
 		input.ExpiresAt,
 		input.ClearSecret,
 		input.CollectInterval,
+		input.Password != nil,
+		input.PrivateKey != nil,
 	).Scan(
 		&item.ID,
 		&item.Name,
@@ -127,6 +188,8 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 		&item.AuthType,
 		&item.Password,
 		&item.PrivateKey,
+		&item.PasswordSecretID,
+		&item.PrivateKeySecretID,
 		&item.ExpiresAt,
 		&item.CollectInterval,
 		&item.NextCollectAt,
@@ -139,7 +202,10 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	)
-	return item, err
+	if err != nil {
+		return Connection{}, err
+	}
+	return r.resolveSecrets(ctx, item), nil
 }
 
 func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connection, error) {
@@ -156,7 +222,8 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 	rows, err := r.db.Query(ctx, `
 		SELECT
 			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.expires_at, c.collect_interval_seconds, c.next_collect_at,
+			c.password, c.private_key, c.password_secret_id, c.private_key_secret_id,
+			c.expires_at, c.collect_interval_seconds, c.next_collect_at,
 			c.collector_installed, c.agent_port, c.collect_status, c.collect_error, c.last_collected_at,
 			c.agent_last_seen_at, c.created_at, c.updated_at,
 			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
@@ -183,6 +250,7 @@ func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connect
 		if err != nil {
 			return nil, err
 		}
+		item = r.resolveSecrets(ctx, item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -319,7 +387,11 @@ func scanMetricSample(row metricScanner) (Metric, error) {
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
+	item, _ := r.Get(ctx, id)
 	_, err := r.db.Exec(ctx, `DELETE FROM server_connections WHERE id = $1`, id)
+	if err == nil {
+		_ = r.deleteSecrets(ctx, item)
+	}
 	return err
 }
 
@@ -492,6 +564,8 @@ func scanConnection(row connectionScanner) (Connection, error) {
 		&item.AuthType,
 		&item.Password,
 		&item.PrivateKey,
+		&item.PasswordSecretID,
+		&item.PrivateKeySecretID,
 		&item.ExpiresAt,
 		&item.CollectInterval,
 		&item.NextCollectAt,
@@ -573,6 +647,36 @@ func scanConnection(row connectionScanner) (Connection, error) {
 		item.Metric = &metric
 	}
 	return item, nil
+}
+
+func (r *Repository) resolveSecrets(ctx context.Context, item Connection) Connection {
+	if r.secrets == nil {
+		return item
+	}
+	if item.PasswordSecretID != "" {
+		if value, err := r.secrets.Get(ctx, item.PasswordSecretID); err == nil {
+			item.Password = value
+		}
+	}
+	if item.PrivateKeySecretID != "" {
+		if value, err := r.secrets.Get(ctx, item.PrivateKeySecretID); err == nil {
+			item.PrivateKey = value
+		}
+	}
+	return item
+}
+
+func (r *Repository) deleteSecrets(ctx context.Context, item Connection) error {
+	if r.secrets == nil {
+		return nil
+	}
+	if item.PasswordSecretID != "" {
+		_ = r.secrets.Delete(ctx, item.PasswordSecretID)
+	}
+	if item.PrivateKeySecretID != "" {
+		_ = r.secrets.Delete(ctx, item.PrivateKeySecretID)
+	}
+	return nil
 }
 
 func nullFloat(value sql.NullFloat64) float64 {

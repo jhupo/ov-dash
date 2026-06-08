@@ -21,18 +21,26 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) Name() string {
+func (Module) ID() string {
 	return "updates"
 }
 
-func (Module) RegisterRoutes(ctx platformmodule.Context) {
+func (Module) RegisterHTTP(ctx platformmodule.Context) {
 	handler := &Handler{service: NewService(ctx.Config, ctx.Logger)}
-	manageUpdates := ctx.RequireCapability(capability.UpdatesManage)
+	readUpdates := ctx.RequireCapability(capability.UpdatesRead)
+	applyUpdates := ctx.RequireCapability(capability.UpdatesApply)
 
-	ctx.ProtectedRouter.With(manageUpdates).Get("/updates", handler.Status)
-	ctx.ProtectedRouter.With(manageUpdates).Post("/updates/check", handler.Check)
-	ctx.ProtectedRouter.With(manageUpdates).Post("/updates/apply", handler.Update)
-	ctx.ProtectedRouter.With(manageUpdates).Post("/updates/restart", handler.Restart)
+	ctx.ProtectedRouter.With(readUpdates).Get("/updates", handler.Status)
+	ctx.ProtectedRouter.With(readUpdates).Post("/updates/check", handler.Check)
+	ctx.ProtectedRouter.With(applyUpdates).Post("/updates/apply", handler.Update)
+	ctx.ProtectedRouter.With(applyUpdates).Post("/updates/restart", handler.Restart)
+}
+
+func (Module) Capabilities() []capability.Capability {
+	return []capability.Capability{
+		capability.UpdatesRead,
+		capability.UpdatesApply,
+	}
 }
 
 func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {

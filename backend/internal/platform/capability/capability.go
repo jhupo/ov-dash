@@ -10,15 +10,42 @@ import (
 type Capability string
 
 const (
-	UpdatesManage Capability = "updates:manage"
-	JobsCreate    Capability = "jobs:create"
-	ServersWrite  Capability = "servers:write"
-	ServersDelete Capability = "servers:delete"
-	ServersSSH    Capability = "servers:ssh"
+	DashboardRead      Capability = "dashboard:read"
+	PlatformRead       Capability = "platform:read"
+	TasksRead          Capability = "tasks:read"
+	TasksWrite         Capability = "tasks:write"
+	AppsRead           Capability = "apps:read"
+	ChatsRead          Capability = "chats:read"
+	UsersRead          Capability = "users:read"
+	WikiRead           Capability = "wiki:read"
+	WikiWrite          Capability = "wiki:write"
+	SettingsRead       Capability = "settings:read"
+	SettingsWrite      Capability = "settings:write"
+	ProxyRead          Capability = "proxy:read"
+	ProxyWrite         Capability = "proxy:write"
+	NotificationsRead  Capability = "notifications:read"
+	NotificationsWrite Capability = "notifications:write"
+	UpdatesRead        Capability = "updates:read"
+	UpdatesApply       Capability = "updates:apply"
+	JobsRead           Capability = "jobs:read"
+	JobsCreate         Capability = "jobs:create"
+	JobsManage         Capability = "jobs:manage"
+	ServersRead        Capability = "servers:read"
+	ServersWrite       Capability = "servers:write"
+	ServersDelete      Capability = "servers:delete"
+	ServersSSH         Capability = "servers:ssh"
+
+	UpdatesManage Capability = UpdatesApply
 )
 
 type User struct {
 	Role string
+}
+
+type Descriptor struct {
+	ID       Capability `json:"id"`
+	Resource string     `json:"resource"`
+	Action   string     `json:"action"`
 }
 
 type UserResolver func(context.Context) (User, bool)
@@ -29,10 +56,43 @@ type RolePolicy struct {
 
 func DefaultRolePolicy() *RolePolicy {
 	return &RolePolicy{grants: map[string]map[Capability]struct{}{
+		"viewer": capabilities(
+			DashboardRead,
+			PlatformRead,
+			TasksRead,
+			AppsRead,
+			ChatsRead,
+			UsersRead,
+			WikiRead,
+			SettingsRead,
+			ProxyRead,
+			NotificationsRead,
+			UpdatesRead,
+			JobsRead,
+			ServersRead,
+		),
 		"operator": capabilities(
+			DashboardRead,
+			PlatformRead,
+			TasksRead,
+			TasksWrite,
+			AppsRead,
+			ChatsRead,
+			UsersRead,
+			WikiRead,
+			WikiWrite,
+			SettingsRead,
+			ProxyRead,
+			NotificationsRead,
+			UpdatesRead,
+			JobsRead,
 			JobsCreate,
+			JobsManage,
+			ServersRead,
 			ServersWrite,
 			ServersSSH,
+			ProxyWrite,
+			NotificationsWrite,
 		),
 	}}
 }
@@ -76,6 +136,26 @@ func capabilities(values ...Capability) map[Capability]struct{} {
 		result[value] = struct{}{}
 	}
 	return result
+}
+
+func Describe(value Capability) Descriptor {
+	parts := strings.SplitN(string(value), ":", 2)
+	descriptor := Descriptor{ID: value}
+	if len(parts) > 0 {
+		descriptor.Resource = parts[0]
+	}
+	if len(parts) > 1 {
+		descriptor.Action = parts[1]
+	}
+	return descriptor
+}
+
+func Descriptors(values []Capability) []Descriptor {
+	descriptors := make([]Descriptor, 0, len(values))
+	for _, value := range values {
+		descriptors = append(descriptors, Describe(value))
+	}
+	return descriptors
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -1,16 +1,22 @@
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { z } from 'zod'
+import { useForm, useWatch } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { apiConfig } from '@/config/api'
 import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from 'react'
+  deleteServerConnection,
+  listServerConnections,
+  requestServerShellTicket,
+  saveServerConnection,
+  touchServerMonitor,
+  updateServerAgent,
+  type ServerAuthType,
+  type ServerConnection,
+} from '@/services/server-connections'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { z } from 'zod'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { zodResolver } from '@hookform/resolvers/zod'
 import {
   CheckCircle2,
   Edit3,
@@ -25,19 +31,8 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
-import { useForm, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
-import {
-  deleteServerConnection,
-  listServerConnections,
-  requestServerShellTicket,
-  saveServerConnection,
-  touchServerMonitor,
-  updateServerAgent,
-  type ServerAuthType,
-  type ServerConnection,
-} from '@/services/server-connections'
-import { apiConfig } from '@/config/api'
+import { useCan } from '@/hooks/use-can'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -120,6 +115,10 @@ const defaultValues: FormValues = {
 
 export function ServerConnectionSettings() {
   const queryClient = useQueryClient()
+  const can = useCan()
+  const canWriteServers = can('servers:write')
+  const canDeleteServers = can('servers:delete')
+  const canSSHServers = can('servers:ssh')
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<ServerConnection | null>(null)
   const [terminalServer, setTerminalServer] = useState<ServerConnection | null>(
@@ -133,12 +132,14 @@ export function ServerConnectionSettings() {
   })
 
   useEffect(() => {
+    if (!canWriteServers) return
+
     void touchServerMonitor()
     const timer = window.setInterval(() => {
       void touchServerMonitor()
     }, 10_000)
     return () => window.clearInterval(timer)
-  }, [])
+  }, [canWriteServers])
 
   const saveMutation = useMutation({
     mutationFn: saveServerConnection,
@@ -184,6 +185,7 @@ export function ServerConnectionSettings() {
         <Button
           type='button'
           size='sm'
+          disabled={!canWriteServers}
           onClick={() => {
             setEditing(null)
             setOpen(true)
@@ -240,13 +242,16 @@ export function ServerConnectionSettings() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align='end' className='w-36'>
                         <DropdownMenuItem
+                          disabled={!canSSHServers}
                           onClick={() => setTerminalServer(item)}
                         >
                           <Terminal />
                           连接
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          disabled={updateAgentMutation.isPending}
+                          disabled={
+                            !canWriteServers || updateAgentMutation.isPending
+                          }
                           onClick={() => updateAgentMutation.mutate(item.id)}
                         >
                           <RefreshCw />
@@ -254,6 +259,7 @@ export function ServerConnectionSettings() {
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
+                          disabled={!canWriteServers}
                           onClick={() => {
                             setEditing(item)
                             setOpen(true)
@@ -264,7 +270,9 @@ export function ServerConnectionSettings() {
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           variant='destructive'
-                          disabled={deleteMutation.isPending}
+                          disabled={
+                            !canDeleteServers || deleteMutation.isPending
+                          }
                           onClick={() => deleteMutation.mutate(item.id)}
                         >
                           <Trash2 />
@@ -283,6 +291,7 @@ export function ServerConnectionSettings() {
           <Button
             type='button'
             variant='outline'
+            disabled={!canWriteServers}
             onClick={() => {
               setEditing(null)
               setOpen(true)
@@ -297,9 +306,11 @@ export function ServerConnectionSettings() {
       <ServerConnectionDialog
         open={open}
         item={editing}
-        isSaving={saveMutation.isPending}
+        isSaving={!canWriteServers || saveMutation.isPending}
         onOpenChange={setOpen}
         onSave={(values) => {
+          if (!canWriteServers) return
+
           saveMutation.mutate({
             id: editing?.id,
             name: values.name.trim(),
@@ -381,12 +392,15 @@ function ServerTerminalDialog({
   const [terminalMountKey, setTerminalMountKey] = useState(0)
   const terminalRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
-  const handleTerminalElement = useCallback((element: HTMLDivElement | null) => {
-    terminalElementRef.current = element
-    if (element) {
-      setTerminalMountKey((value) => value + 1)
-    }
-  }, [])
+  const handleTerminalElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      terminalElementRef.current = element
+      if (element) {
+        setTerminalMountKey((value) => value + 1)
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     if (!server) return
@@ -496,8 +510,7 @@ function ServerTerminalDialog({
           }
         }
         socket.onerror = () => {
-          const message =
-            'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
+          const message = 'SSH 连接异常，请检查服务器地址、端口、凭据或网络。'
           failed = true
           setStatus('error')
           setStatusMessage(message)
@@ -574,7 +587,7 @@ function ServerTerminalDialog({
             ref={handleTerminalElement}
             aria-label='SSH 终端'
             onClick={focusTerminal}
-            className='h-[min(68vh,640px)] min-h-[420px] overflow-hidden rounded-md border bg-[#050816] p-2 text-[#d8f3ff] shadow-inner outline-none ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_.xterm]:h-full [&_.xterm-helpers]:opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:bg-transparent!'
+            className='h-[min(68vh,640px)] min-h-[420px] overflow-hidden rounded-md border bg-[#050816] p-2 text-[#d8f3ff] shadow-inner ring-offset-background transition outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&_.xterm]:h-full [&_.xterm-helpers]:opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:bg-transparent!'
           />
         </div>
       </DialogContent>

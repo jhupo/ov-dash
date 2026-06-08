@@ -26,9 +26,24 @@ func main() {
 	}
 	defer runtime.Close()
 
-	runner := worker.NewRunner(worker.RunnerDeps{
+	migrationSummary, err := runtime.Migrations.ApplyDir(ctx, cfg.Migrations.Dir)
+	if err != nil {
+		runtime.Logger.Fatal("apply migrations", zap.Error(err))
+	}
+	platform.LogMigrationSummary(runtime.Logger, migrationSummary)
+
+	secretSummary, err := runtime.BackfillLegacySecrets(ctx)
+	if err != nil {
+		runtime.Logger.Fatal("backfill legacy secrets", zap.Error(err))
+	}
+	platform.LogSecretBackfillSummary(runtime.Logger, secretSummary)
+
+	runner, err := worker.NewRunner(worker.RunnerDeps{
 		Runtime: runtime,
 	})
+	if err != nil {
+		runtime.Logger.Fatal("create worker runner", zap.Error(err))
+	}
 
 	if err := runner.Run(ctx); err != nil {
 		runtime.Logger.Fatal("worker stopped", zap.Error(err))

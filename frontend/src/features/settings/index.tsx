@@ -3,6 +3,7 @@ import {
   getSettingsNavItems,
   isSystemSettingsPath,
 } from '@/services/module-registry'
+import { useCan } from '@/hooks/use-can'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
@@ -13,8 +14,10 @@ import { SidebarNav } from './components/sidebar-nav'
 
 export function Settings() {
   const pathname = useLocation({ select: (location) => location.pathname })
+  const can = useCan()
   const navItems = getSettingsNavItems(
-    isSystemSettingsPath(pathname) ? 'system' : 'profile'
+    isSystemSettingsPath(pathname) ? 'system' : 'profile',
+    can
   )
 
   return (

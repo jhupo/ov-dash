@@ -4,14 +4,20 @@ import (
 	"context"
 
 	"ov-dash/backend/internal/db"
+	"ov-dash/backend/internal/platform/secret"
 )
 
 type Repository struct {
-	db *db.Pool
+	db      *db.Pool
+	secrets *secret.Store
 }
 
 func NewRepository(db *db.Pool) *Repository {
 	return &Repository{db: db}
+}
+
+func NewRepositoryWithSecrets(db *db.Pool, secrets *secret.Store) *Repository {
+	return &Repository{db: db, secrets: secrets}
 }
 
 func (r *Repository) Get(ctx context.Context) (Settings, error) {
@@ -20,7 +26,7 @@ func (r *Repository) Get(ctx context.Context) (Settings, error) {
 		INSERT INTO proxy_settings (id)
 		VALUES ($1)
 		ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
-		RETURNING id, enabled, scheme, host, port, username, password, updated_at
+		RETURNING id, enabled, scheme, host, port, username, password, password_secret_id, updated_at
 	`, DefaultSettingsID).Scan(
 		&settings.ID,
 		&settings.Enabled,
@@ -29,8 +35,12 @@ func (r *Repository) Get(ctx context.Context) (Settings, error) {
 		&settings.Port,
 		&settings.Username,
 		&settings.Password,
+		&settings.PasswordSecretID,
 		&settings.UpdatedAt,
 	)
+	if err == nil {
+		settings.Password = r.resolveSecret(ctx, settings.PasswordSecretID, settings.Password)
+	}
 	return settings, err
 }
 
@@ -41,10 +51,23 @@ func (r *Repository) Update(ctx context.Context, input UpdateSettingsInput) (Set
 	}
 
 	password := current.Password
+	passwordSecretID := current.PasswordSecretID
 	if input.ClearPassword {
 		password = ""
+		if passwordSecretID != "" && r.secrets != nil {
+			_ = r.secrets.Delete(ctx, passwordSecretID)
+		}
+		passwordSecretID = ""
 	} else if input.Password != nil {
 		password = *input.Password
+		if r.secrets != nil && password != "" {
+			id, err := r.secrets.Put(ctx, "proxy_settings:"+DefaultSettingsID, "password", password)
+			if err != nil {
+				return Settings{}, err
+			}
+			passwordSecretID = id
+			password = ""
+		}
 	}
 
 	var settings Settings
@@ -56,10 +79,11 @@ func (r *Repository) Update(ctx context.Context, input UpdateSettingsInput) (Set
 			port = $4,
 			username = $5,
 			password = $6,
+			password_secret_id = $7,
 			updated_at = now()
 		WHERE id = $1
-		RETURNING id, enabled, scheme, host, port, username, password, updated_at
-	`, DefaultSettingsID, input.Enabled, input.Host, input.Port, input.Username, password).Scan(
+		RETURNING id, enabled, scheme, host, port, username, password, password_secret_id, updated_at
+	`, DefaultSettingsID, input.Enabled, input.Host, input.Port, input.Username, password, passwordSecretID).Scan(
 		&settings.ID,
 		&settings.Enabled,
 		&settings.Scheme,
@@ -67,7 +91,22 @@ func (r *Repository) Update(ctx context.Context, input UpdateSettingsInput) (Set
 		&settings.Port,
 		&settings.Username,
 		&settings.Password,
+		&settings.PasswordSecretID,
 		&settings.UpdatedAt,
 	)
+	if err == nil {
+		settings.Password = r.resolveSecret(ctx, settings.PasswordSecretID, settings.Password)
+	}
 	return settings, err
+}
+
+func (r *Repository) resolveSecret(ctx context.Context, secretID string, fallback string) string {
+	if secretID == "" || r.secrets == nil {
+		return fallback
+	}
+	value, err := r.secrets.Get(ctx, secretID)
+	if err != nil {
+		return fallback
+	}
+	return value
 }

@@ -18,6 +18,7 @@ type Config struct {
 	Update     UpdateConfig
 	Migrations MigrationsConfig
 	Uploads    UploadsConfig
+	Security   SecurityConfig
 }
 
 type AppConfig struct {
@@ -84,6 +85,16 @@ type UploadsConfig struct {
 	WikiDir string
 }
 
+type SecurityConfig struct {
+	SecretKey string
+}
+
+const DefaultSecretKey = "local-development-secret-change-me"
+
+func (c SecurityConfig) UsesDefaultSecretKey() bool {
+	return strings.TrimSpace(c.SecretKey) == DefaultSecretKey
+}
+
 func Load() Config {
 	return Config{
 		App: AppConfig{
@@ -136,6 +147,9 @@ func Load() Config {
 		},
 		Uploads: UploadsConfig{
 			WikiDir: env("WIKI_UPLOADS_DIR", "./uploads/wiki"),
+		},
+		Security: SecurityConfig{
+			SecretKey: env("APP_SECRET_KEY", DefaultSecretKey),
 		},
 	}
 }
