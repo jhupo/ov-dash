@@ -26,6 +26,7 @@ type serverProbe interface {
 	CollectOnce(ctx context.Context, item Connection) (Metric, error)
 	Status(ctx context.Context, item Connection) (AgentStatus, error)
 	StatusOnce(ctx context.Context, item Connection) (AgentStatus, error)
+	Diagnostics(ctx context.Context, item Connection) AgentDiagnostics
 	Dial(ctx context.Context, item Connection) (net.Conn, error)
 	CollectConn(ctx context.Context, item Connection, conn net.Conn, reader *bufio.Reader) (Metric, error)
 }
@@ -110,6 +111,14 @@ func (c *ProbeCoordinator) Status(ctx context.Context, id string) (AgentStatus, 
 		return AgentStatus{}, err
 	}
 	return c.probe.Status(ctx, item)
+}
+
+func (c *ProbeCoordinator) Diagnostics(ctx context.Context, id string) (AgentDiagnostics, error) {
+	item, err := c.repository.Get(ctx, id)
+	if err != nil {
+		return AgentDiagnostics{}, err
+	}
+	return c.probe.Diagnostics(ctx, item), nil
 }
 
 func (c *ProbeCoordinator) TouchMonitor(ctx context.Context, ttl time.Duration) error {

@@ -82,6 +82,7 @@ func (Module) RegisterHTTP(ctx platformmodule.Context) {
 	ctx.ProtectedRouter.With(writeServers).Put("/server-connections/{id}", handler.Save)
 	ctx.ProtectedRouter.With(writeServers).Post("/server-connections/{id}/agent/update", handler.UpdateAgent)
 	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/status", handler.AgentStatus)
+	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/diagnostics", handler.AgentDiagnostics)
 	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/command", handler.RunCommand)
 	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/ticket", handler.IssueShellTicket)
 	ctx.PublicRouter.Get("/server-connections/{id}/ssh/ws", handler.Shell)
@@ -204,6 +205,17 @@ func (h *Handler) AgentStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, status)
+}
+
+func (h *Handler) AgentDiagnostics(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	diagnostics, err := h.collector.AgentDiagnostics(ctx, chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, diagnostics)
 }
 
 func (h *Handler) RunCommand(w http.ResponseWriter, r *http.Request) {

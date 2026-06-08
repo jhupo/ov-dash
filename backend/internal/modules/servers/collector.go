@@ -40,6 +40,10 @@ func (c *Collector) AgentStatus(ctx context.Context, id string) (AgentStatus, er
 	return c.coordinator.Status(ctx, id)
 }
 
+func (c *Collector) AgentDiagnostics(ctx context.Context, id string) (AgentDiagnostics, error) {
+	return c.coordinator.Diagnostics(ctx, id)
+}
+
 func (c *Collector) RunCommand(ctx context.Context, id string, command string) (string, error) {
 	return c.ssh.RunCommand(ctx, id, command)
 }

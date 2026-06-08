@@ -133,6 +133,16 @@ func (p *serverProbeStub) StatusOnce(ctx context.Context, item Connection) (Agen
 	return p.Status(ctx, item)
 }
 
+func (p *serverProbeStub) Diagnostics(ctx context.Context, item Connection) AgentDiagnostics {
+	return AgentDiagnostics{
+		ServerID:        item.ID,
+		Status:          DiagnosticOK,
+		ExpectedVersion: currentAgentVersion,
+		AgentPort:       agentPort(item),
+		CheckedAt:       time.Now().UTC(),
+	}
+}
+
 func (p *serverProbeStub) Dial(ctx context.Context, item Connection) (net.Conn, error) {
 	if p.dialErr != nil {
 		return nil, p.dialErr

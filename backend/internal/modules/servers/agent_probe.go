@@ -9,6 +9,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -17,9 +19,10 @@ const (
 )
 
 type AgentProbe struct {
-	ssh         *SSHExecutor
+	ssh         agentSSHExecutor
 	dialTimeout time.Duration
 	readTimeout time.Duration
+	dialContext func(ctx context.Context, network string, address string) (net.Conn, error)
 }
 
 func NewAgentProbe(ssh *SSHExecutor) *AgentProbe {
@@ -30,12 +33,18 @@ func NewAgentProbe(ssh *SSHExecutor) *AgentProbe {
 	}
 }
 
+type agentSSHExecutor interface {
+	Connect(ctx context.Context, item Connection) (*ssh.Client, error)
+	Run(ctx context.Context, client *ssh.Client, command string) error
+	Output(ctx context.Context, client *ssh.Client, command string) (string, error)
+}
+
 func (p *AgentProbe) Install(ctx context.Context, item Connection) error {
 	client, err := p.ssh.Connect(ctx, item)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer closeSSHClient(client)
 
 	if err := p.ssh.Run(ctx, client, privilegedInstallCommand(item.AgentPort)); err != nil {
 		return err
@@ -76,10 +85,9 @@ func (p *AgentProbe) Wait(ctx context.Context, item Connection) (AgentStatus, er
 }
 
 func (p *AgentProbe) Status(ctx context.Context, item Connection) (AgentStatus, error) {
-	conn, err := p.Dial(ctx, item)
+	status, err := p.StatusTCP(ctx, item)
 	if err == nil {
-		defer conn.Close()
-		return p.StatusConn(ctx, item, conn, bufio.NewReader(conn))
+		return status, nil
 	}
 	status, fallbackErr := p.StatusOnce(ctx, item)
 	if fallbackErr == nil {
@@ -88,12 +96,21 @@ func (p *AgentProbe) Status(ctx context.Context, item Connection) (AgentStatus, 
 	return AgentStatus{}, fmt.Errorf("%w; ssh status fallback failed: %v", err, fallbackErr)
 }
 
+func (p *AgentProbe) StatusTCP(ctx context.Context, item Connection) (AgentStatus, error) {
+	conn, err := p.Dial(ctx, item)
+	if err != nil {
+		return AgentStatus{}, err
+	}
+	defer conn.Close()
+	return p.StatusConn(ctx, item, conn, bufio.NewReader(conn))
+}
+
 func (p *AgentProbe) StatusOnce(ctx context.Context, item Connection) (AgentStatus, error) {
 	client, err := p.ssh.Connect(ctx, item)
 	if err != nil {
 		return AgentStatus{}, err
 	}
-	defer client.Close()
+	defer closeSSHClient(client)
 
 	output, err := p.ssh.Output(ctx, client, agentPath+" status")
 	if err != nil {
@@ -124,7 +141,7 @@ func (p *AgentProbe) CollectOnce(ctx context.Context, item Connection) (Metric, 
 	if err != nil {
 		return Metric{}, err
 	}
-	defer client.Close()
+	defer closeSSHClient(client)
 
 	start := time.Now()
 	output, err := p.ssh.Output(ctx, client, agentPath+" once")
@@ -169,8 +186,12 @@ func (p *AgentProbe) requestConn(ctx context.Context, conn net.Conn, reader *buf
 }
 
 func (p *AgentProbe) Dial(ctx context.Context, item Connection) (net.Conn, error) {
+	address := fmt.Sprintf("%s:%d", item.Host, agentPort(item))
+	if p.dialContext != nil {
+		return p.dialContext(ctx, "tcp", address)
+	}
 	dialer := net.Dialer{Timeout: p.dialTimeout}
-	return dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", item.Host, agentPort(item)))
+	return dialer.DialContext(ctx, "tcp", address)
 }
 
 func agentPort(item Connection) int {
@@ -178,6 +199,12 @@ func agentPort(item Connection) int {
 		return defaultAgentPort
 	}
 	return item.AgentPort
+}
+
+func closeSSHClient(client *ssh.Client) {
+	if client != nil {
+		_ = client.Close()
+	}
 }
 
 func installCommand(port int) string {
