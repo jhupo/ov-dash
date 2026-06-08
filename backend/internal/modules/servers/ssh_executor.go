@@ -12,6 +12,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+var errMissingServerCredential = errors.New("missing server credential")
+
 type SSHExecutor struct {
 	timeout time.Duration
 }
@@ -34,7 +36,7 @@ func (e *SSHExecutor) Connect(ctx context.Context, item Connection) (*ssh.Client
 		Timeout:         e.timeout,
 	}
 	if len(config.Auth) == 0 {
-		return nil, errors.New("missing server credential")
+		return nil, errMissingServerCredential
 	}
 
 	dialer := net.Dialer{Timeout: e.timeout}
