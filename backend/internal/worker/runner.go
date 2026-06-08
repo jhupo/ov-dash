@@ -26,6 +26,7 @@ type RunnerDeps struct {
 
 type Runner struct {
 	runtime    *platform.Runtime
+	jobs       *platformmodule.JobRegistry
 	handlers   map[string]platformmodule.JobHandler
 	instanceID string
 }
@@ -47,6 +48,7 @@ func NewRunner(deps RunnerDeps) (*Runner, error) {
 
 	r := &Runner{
 		runtime:    deps.Runtime,
+		jobs:       jobRegistry,
 		handlers:   jobRegistry.Handlers(),
 		instanceID: newInstanceID(),
 	}
@@ -323,6 +325,20 @@ func retryBackoff(attempt int) time.Duration {
 	return delay
 }
 
+func (r *Runner) newRegisteredJob(jobType string, payload map[string]any) (queue.Job, error) {
+	job, err := queue.NewJob(jobType, payload)
+	if err != nil {
+		return queue.Job{}, err
+	}
+	if r != nil && r.jobs != nil {
+		if def, ok := r.jobs.Definition(jobType); ok && def.MaxAttempts > 0 {
+			job.MaxAttempts = def.MaxAttempts
+		}
+	}
+	job.Normalize()
+	return job, nil
+}
+
 func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {
 	repository := servers.NewRepository(r.runtime.DB)
 	ticker := time.NewTicker(time.Second)
@@ -348,12 +364,11 @@ func (r *Runner) scheduleServerCollections(ctx context.Context, repository *serv
 		return
 	}
 	for _, item := range items {
-		job, err := queue.NewJob("server.collect", map[string]any{"server_id": item.ID})
+		job, err := r.newRegisteredJob("server.collect", map[string]any{"server_id": item.ID})
 		if err != nil {
 			r.runtime.Logger.Error("create server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
 		}
-		job.MaxAttempts = servers.ServerCollectMaxAttempts
 		if err := r.runtime.Queue.Enqueue(ctx, r.runtime.Config.Worker.QueueName, job); err != nil {
 			r.runtime.Logger.Error("enqueue server collect job", zap.String("server_id", item.ID), zap.Error(err))
 			continue
