@@ -21,6 +21,7 @@ type probeRepository interface {
 
 type serverProbe interface {
 	Install(ctx context.Context, item Connection) error
+	EnsureCurrent(ctx context.Context, item Connection) error
 	Collect(ctx context.Context, item Connection) (Metric, error)
 	CollectOnce(ctx context.Context, item Connection) (Metric, error)
 	Status(ctx context.Context, item Connection) (AgentStatus, error)
@@ -113,15 +114,12 @@ func (c *ProbeCoordinator) CollectAgentLoop(ctx context.Context, id string) erro
 	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
 		return err
 	}
+	if err := c.probe.EnsureCurrent(ctx, item); err != nil {
+		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(c.annotateCollectError(ctx, item, err)))
+		return err
+	}
 
 	conn, err := c.probe.Dial(ctx, item)
-	if err != nil {
-		if err := c.probe.Install(ctx, item); err != nil {
-			_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-			return err
-		}
-		conn, err = c.probe.Dial(ctx, item)
-	}
 	if err != nil {
 		return c.collectAgentFallbackLoop(ctx, item, err)
 	}
@@ -193,7 +191,7 @@ func (c *ProbeCoordinator) collectAgentFallbackLoop(ctx context.Context, item Co
 }
 
 func (c *ProbeCoordinator) collect(ctx context.Context, item Connection) (Metric, error) {
-	if err := c.probe.Install(ctx, item); err != nil {
+	if err := c.probe.EnsureCurrent(ctx, item); err != nil {
 		return Metric{}, err
 	}
 	return c.collectAfterInstall(ctx, item)

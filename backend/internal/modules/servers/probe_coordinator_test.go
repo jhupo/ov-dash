@@ -75,6 +75,9 @@ func (r *probeRepositoryStub) MonitorActive(ctx context.Context) (bool, error) {
 
 type serverProbeStub struct {
 	installErr     error
+	ensureErr      error
+	ensureCalls    int
+	installCalls   int
 	collectErr     error
 	collectOnceErr error
 	dialErr        error
@@ -85,6 +88,15 @@ type serverProbeStub struct {
 }
 
 func (p *serverProbeStub) Install(ctx context.Context, item Connection) error {
+	p.installCalls++
+	return p.installErr
+}
+
+func (p *serverProbeStub) EnsureCurrent(ctx context.Context, item Connection) error {
+	p.ensureCalls++
+	if p.ensureErr != nil {
+		return p.ensureErr
+	}
 	return p.installErr
 }
 
@@ -164,7 +176,7 @@ func TestProbeCoordinatorCollectFallsBackToSSHOnce(t *testing.T) {
 
 func TestProbeCoordinatorCollectMarksFailure(t *testing.T) {
 	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
-	probe := &serverProbeStub{installErr: errors.New("install failed"), collectOnceErr: errors.New("once failed"), statusErr: errors.New("status unavailable")}
+	probe := &serverProbeStub{ensureErr: errors.New("install failed"), collectOnceErr: errors.New("once failed"), statusErr: errors.New("status unavailable")}
 	coordinator := NewProbeCoordinator(repository, probe)
 
 	if err := coordinator.Collect(context.Background(), "srv_1"); err == nil {
@@ -178,7 +190,7 @@ func TestProbeCoordinatorCollectMarksFailure(t *testing.T) {
 func TestProbeCoordinatorCollectFailureIncludesAgentStatusWhenAvailable(t *testing.T) {
 	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
 	probe := &serverProbeStub{
-		installErr:     errors.New("install failed"),
+		ensureErr:      errors.New("install failed"),
 		collectOnceErr: errors.New("once failed"),
 		status: AgentStatus{
 			Version:       currentAgentVersion,
@@ -267,6 +279,31 @@ func TestProbeCoordinatorCollectAgentLoopFallsBackToSSHOnce(t *testing.T) {
 	}
 	if len(repository.failed) != 0 {
 		t.Fatalf("unexpected failed marks: %#v", repository.failed)
+	}
+	if probe.installCalls != 0 {
+		t.Fatalf("unexpected install calls before ssh fallback: %d", probe.installCalls)
+	}
+	if probe.ensureCalls != 1 {
+		t.Fatalf("EnsureCurrent calls = %d, want 1", probe.ensureCalls)
+	}
+}
+
+func TestProbeCoordinatorCollectAgentLoopFailsWhenEnsureCurrentFails(t *testing.T) {
+	repository := newProbeRepositoryStub(Connection{ID: "srv_1"})
+	probe := &serverProbeStub{
+		ensureErr: errors.New("agent update failed"),
+		statusErr: errors.New("status unavailable"),
+	}
+	coordinator := NewProbeCoordinator(repository, probe)
+
+	if err := coordinator.CollectAgentLoop(context.Background(), "srv_1"); err == nil {
+		t.Fatal("CollectAgentLoop returned nil error")
+	}
+	if probe.ensureCalls != 1 {
+		t.Fatalf("EnsureCurrent calls = %d, want 1", probe.ensureCalls)
+	}
+	if repository.failed["srv_1"] != "agent update failed" {
+		t.Fatalf("failure was not recorded: %#v", repository.failed)
 	}
 }
 

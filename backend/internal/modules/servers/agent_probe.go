@@ -3,6 +3,7 @@ package servers
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -44,6 +45,17 @@ func (p *AgentProbe) Install(ctx context.Context, item Connection) error {
 		return err
 	}
 	return status.ValidateVersion()
+}
+
+func (p *AgentProbe) EnsureCurrent(ctx context.Context, item Connection) error {
+	status, err := p.Status(ctx, item)
+	if err == nil && status.ValidateVersion() == nil {
+		return nil
+	}
+	if errors.Is(err, errMissingServerCredential) {
+		return err
+	}
+	return p.Install(ctx, item)
 }
 
 func (p *AgentProbe) Wait(ctx context.Context, item Connection) (AgentStatus, error) {

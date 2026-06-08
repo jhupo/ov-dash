@@ -2,11 +2,14 @@ package servers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
 
 const currentAgentVersion = "2026.06.09.1"
+
+var ErrAgentStatusMissingVersion = errors.New("agent status missing version")
 
 type AgentStatus struct {
 	ServerID      string    `json:"server_id"`
@@ -32,7 +35,7 @@ func decodeAgentStatus(serverID string, rawPayload string, checkedAt time.Time) 
 
 func (s AgentStatus) ValidateVersion() error {
 	if s.Version == "" {
-		return fmt.Errorf("agent status missing version")
+		return ErrAgentStatusMissingVersion
 	}
 	if s.Version != currentAgentVersion {
 		return fmt.Errorf("agent version mismatch: got %s want %s", s.Version, currentAgentVersion)
