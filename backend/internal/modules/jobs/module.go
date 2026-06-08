@@ -15,6 +15,8 @@ import (
 
 	"ov-dash/backend/internal/config"
 	"ov-dash/backend/internal/events"
+	"ov-dash/backend/internal/modules/auth"
+	"ov-dash/backend/internal/platform/audit"
 	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
@@ -32,6 +34,7 @@ type Handler struct {
 	queue     jobQueue
 	queueName string
 	registry  *platformmodule.JobRegistry
+	audit     audit.RequestRecorder
 }
 
 type jobQueue interface {
@@ -68,6 +71,7 @@ func (Module) RegisterHTTP(ctx platformmodule.Context) {
 		queue:     ctx.Queue,
 		queueName: ctx.Config.Worker.QueueName,
 		registry:  ctx.Jobs,
+		audit:     ctx.Audit,
 	}
 	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs", handler.List)
 	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs/{id}", handler.Get)
@@ -193,10 +197,13 @@ func (h *Handler) Logs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
-	if err := h.queue.RequestJobCancel(r.Context(), chi.URLParam(r, "id")); err != nil {
+	jobID := chi.URLParam(r, "id")
+	if err := h.queue.RequestJobCancel(r.Context(), jobID); err != nil {
+		h.recordAudit(r, "jobs.cancel", jobID, "failure", err.Error(), nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "job_cancel_failed"})
 		return
 	}
+	h.recordAudit(r, "jobs.cancel", jobID, "success", "", nil)
 	httpx.WriteJSON(w, http.StatusAccepted, map[string]string{"status": "cancel_requested"})
 }
 
@@ -206,8 +213,12 @@ func (h *Handler) Requeue(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
 		return
 	}
-	job, err := h.queue.RequeueJob(r.Context(), h.queueName, chi.URLParam(r, "id"), input.IdempotencyKey)
+	oldJobID := chi.URLParam(r, "id")
+	job, err := h.queue.RequeueJob(r.Context(), h.queueName, oldJobID, input.IdempotencyKey)
 	if err != nil {
+		h.recordAudit(r, "jobs.requeue", oldJobID, "failure", err.Error(), map[string]any{
+			"idempotency_key": input.IdempotencyKey,
+		})
 		switch {
 		case errors.Is(err, queue.ErrJobNotRequeueable):
 			httpx.WriteJSON(w, http.StatusConflict, map[string]string{"error": "job_not_requeueable"})
@@ -218,7 +229,29 @@ func (h *Handler) Requeue(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.recordAudit(r, "jobs.requeue", oldJobID, "success", "", map[string]any{
+		"new_job_id":      job.ID,
+		"job_type":        job.Type,
+		"idempotency_key": job.IdempotencyKey,
+	})
 	httpx.WriteJSON(w, http.StatusAccepted, job)
+}
+
+func (h *Handler) recordAudit(r *http.Request, action string, resourceID string, result string, message string, metadata map[string]any) {
+	user, _ := auth.UserFromContext(r.Context())
+	audit.RecordRequest(h.audit, r, audit.Entry{
+		Actor: audit.Actor{
+			ID:    user.ID,
+			Email: user.Email,
+			Role:  user.Role,
+		},
+		Action:     action,
+		Resource:   "jobs",
+		ResourceID: resourceID,
+		Result:     result,
+		Message:    message,
+		Metadata:   metadata,
+	})
 }
 
 type PythonScriptHandler struct {

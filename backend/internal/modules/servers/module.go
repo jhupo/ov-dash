@@ -9,9 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"ov-dash/backend/internal/modules/auth"
+	"ov-dash/backend/internal/platform/audit"
 	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
+	"ov-dash/backend/internal/platform/redact"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -22,6 +25,7 @@ type Handler struct {
 	service   *Service
 	collector *Collector
 	cache     cacheStore
+	audit     audit.RequestRecorder
 }
 
 type cacheStore interface {
@@ -64,6 +68,7 @@ func (Module) RegisterHTTP(ctx platformmodule.Context) {
 		service:   NewService(repository),
 		collector: NewCollector(repository),
 		cache:     ctx.Cache,
+		audit:     ctx.Audit,
 	}
 	readServers := ctx.RequireCapability(capability.ServersRead)
 	writeServers := ctx.RequireCapability(capability.ServersWrite)
@@ -178,12 +183,15 @@ func (h *Handler) TouchMonitor(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
+	serverID := chi.URLParam(r, "id")
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	if err := h.collector.Install(ctx, chi.URLParam(r, "id")); err != nil {
+	if err := h.collector.Install(ctx, serverID); err != nil {
+		h.recordAudit(r, "servers.agent.update", serverID, "failure", err.Error(), nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	h.recordAudit(r, "servers.agent.update", serverID, "success", "", nil)
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -211,37 +219,48 @@ func (h *Handler) RunCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	output, err := h.collector.RunCommand(ctx, chi.URLParam(r, "id"), command)
+	serverID := chi.URLParam(r, "id")
+	metadata := map[string]any{
+		"command":        redact.Text(command),
+		"command_length": len(command),
+	}
+	output, err := h.collector.RunCommand(ctx, serverID, command)
 	if err != nil {
+		h.recordAudit(r, "servers.ssh.command", serverID, "failure", err.Error(), metadata)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  err.Error(),
 			"output": output,
 		})
 		return
 	}
+	h.recordAudit(r, "servers.ssh.command", serverID, "success", "", metadata)
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"output": output})
 }
 
 func (h *Handler) IssueShellTicket(w http.ResponseWriter, r *http.Request) {
+	serverID := chi.URLParam(r, "id")
 	if h.cache == nil {
+		h.recordAudit(r, "servers.ssh.ticket", serverID, "failure", "ssh_ticket_store_unavailable", nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_store_unavailable"})
 		return
 	}
-	serverID := chi.URLParam(r, "id")
 	if serverID == "" {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_server_id"})
 		return
 	}
 	ticket, err := randomTicket()
 	if err != nil {
+		h.recordAudit(r, "servers.ssh.ticket", serverID, "failure", err.Error(), nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_create_failed"})
 		return
 	}
 	expiresIn, expiresAt := shellTicketExpiry(time.Now())
 	if err := h.cache.Set(r.Context(), shellTicketKey(ticket), serverID, expiresIn); err != nil {
+		h.recordAudit(r, "servers.ssh.ticket", serverID, "failure", err.Error(), nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_store_failed"})
 		return
 	}
+	h.recordAudit(r, "servers.ssh.ticket", serverID, "success", "", map[string]any{"expires_at": expiresAt})
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ticket":     ticket,
 		"expires_at": expiresAt,
@@ -342,11 +361,31 @@ func (h *Handler) Shell(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.service.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+	serverID := chi.URLParam(r, "id")
+	if err := h.service.Delete(r.Context(), serverID); err != nil {
+		h.recordAudit(r, "servers.delete", serverID, "failure", err.Error(), nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_connection_delete_failed"})
 		return
 	}
+	h.recordAudit(r, "servers.delete", serverID, "success", "", nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) recordAudit(r *http.Request, action string, resourceID string, result string, message string, metadata map[string]any) {
+	user, _ := auth.UserFromContext(r.Context())
+	audit.RecordRequest(h.audit, r, audit.Entry{
+		Actor: audit.Actor{
+			ID:    user.ID,
+			Email: user.Email,
+			Role:  user.Role,
+		},
+		Action:     action,
+		Resource:   "servers",
+		ResourceID: resourceID,
+		Result:     result,
+		Message:    message,
+		Metadata:   metadata,
+	})
 }
 
 func parseOptionalTime(raw *string) (*time.Time, error) {

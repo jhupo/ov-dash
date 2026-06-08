@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"ov-dash/backend/internal/events"
+	"ov-dash/backend/internal/modules/auth"
+	"ov-dash/backend/internal/platform/audit"
 	platformmodule "ov-dash/backend/internal/platform/module"
 	"ov-dash/backend/internal/queue"
 
@@ -184,6 +186,65 @@ func TestCancelMapsQueueFailure(t *testing.T) {
 	assertJSONError(t, recorder, http.StatusInternalServerError, "job_cancel_failed")
 }
 
+func TestCancelRecordsAudit(t *testing.T) {
+	auditRecorder := &fakeAuditRecorder{}
+	handler := newTestHandler(&fakeJobQueue{}, platformmodule.NewJobRegistry())
+	handler.audit = auditRecorder
+	recorder := httptest.NewRecorder()
+	request := requestWithUser(requestWithJobID(http.MethodPost, "/jobs/job-1/cancel", "", "job-1"))
+	request.Header.Set("User-Agent", "jobs-test")
+	request.RemoteAddr = "192.0.2.10:12345"
+
+	handler.Cancel(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	entry := auditRecorder.single(t)
+	if entry.Action != "jobs.cancel" || entry.Resource != "jobs" || entry.ResourceID != "job-1" || entry.Result != "success" {
+		t.Fatalf("audit entry did not describe cancel: %#v", entry)
+	}
+	if entry.Actor.ID != "user-1" || entry.Actor.Email != "ops@example.com" || entry.Actor.Role != "admin" {
+		t.Fatalf("audit actor = %#v", entry.Actor)
+	}
+	if entry.IP != "192.0.2.10" || entry.UserAgent != "jobs-test" {
+		t.Fatalf("request audit fields = ip %q ua %q", entry.IP, entry.UserAgent)
+	}
+}
+
+func TestRequeueRecordsAudit(t *testing.T) {
+	auditRecorder := &fakeAuditRecorder{}
+	fakeQueue := &fakeJobQueue{
+		requeueJob: queue.Job{
+			ID:             "new-job",
+			Type:           "noop",
+			IdempotencyKey: "once",
+			CreatedAt:      time.Now().UTC(),
+		},
+	}
+	handler := newTestHandler(fakeQueue, platformmodule.NewJobRegistry())
+	handler.audit = auditRecorder
+	recorder := httptest.NewRecorder()
+	request := requestWithUser(requestWithJobID(http.MethodPost, "/jobs/job-1/requeue", `{"idempotency_key":"once"}`, "job-1"))
+	request.Header.Set("X-Forwarded-For", "203.0.113.9, 192.0.2.10")
+
+	handler.Requeue(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	entry := auditRecorder.single(t)
+	if entry.Action != "jobs.requeue" || entry.ResourceID != "job-1" || entry.Result != "success" {
+		t.Fatalf("audit entry did not describe requeue: %#v", entry)
+	}
+	if entry.Metadata["new_job_id"] != "new-job" || entry.Metadata["job_type"] != "noop" || entry.Metadata["idempotency_key"] != "once" {
+		t.Fatalf("audit metadata = %#v", entry.Metadata)
+	}
+	if entry.IP != "203.0.113.9" {
+		t.Fatalf("audit ip = %q, want forwarded address", entry.IP)
+	}
+}
+
 func newTestHandler(q *fakeJobQueue, registry *platformmodule.JobRegistry) *Handler {
 	return &Handler{
 		events:    events.NewBus(zap.NewNop()),
@@ -211,6 +272,14 @@ func requestWithJobID(method string, target string, body string, id string) *htt
 	return request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeCtx))
 }
 
+func requestWithUser(request *http.Request) *http.Request {
+	return request.WithContext(auth.ContextWithUser(request.Context(), auth.User{
+		ID:    "user-1",
+		Email: "ops@example.com",
+		Role:  "admin",
+	}))
+}
+
 func assertJSONError(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	if recorder.Code != status {
@@ -230,6 +299,7 @@ type fakeJobQueue struct {
 	requeueErr error
 	cancelErr  error
 	enqueued   *fakeEnqueuedJob
+	requeueJob queue.Job
 }
 
 type fakeEnqueuedJob struct {
@@ -269,5 +339,25 @@ func (q *fakeJobQueue) RequeueJob(context.Context, string, string, string) (queu
 	if q.requeueErr != nil {
 		return queue.Job{}, q.requeueErr
 	}
+	if q.requeueJob.ID != "" {
+		return q.requeueJob, nil
+	}
 	return queue.Job{ID: "new-job", Type: "noop", CreatedAt: time.Now().UTC()}, nil
+}
+
+type fakeAuditRecorder struct {
+	entries []audit.Entry
+}
+
+func (r *fakeAuditRecorder) Record(_ context.Context, entry audit.Entry) error {
+	r.entries = append(r.entries, entry)
+	return nil
+}
+
+func (r *fakeAuditRecorder) single(t *testing.T) audit.Entry {
+	t.Helper()
+	if len(r.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1: %#v", len(r.entries), r.entries)
+	}
+	return r.entries[0]
 }
