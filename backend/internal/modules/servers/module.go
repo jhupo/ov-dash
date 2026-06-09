@@ -27,6 +27,7 @@ type Handler struct {
 	collector *Collector
 	queue     serverJobQueue
 	queueName string
+	activity  agentActivityQueue
 	cache     cacheStore
 	audit     audit.RequestRecorder
 }
@@ -76,6 +77,7 @@ func (Module) RegisterHTTP(ctx platformmodule.Context) {
 		collector: NewCollector(repository),
 		queue:     ctx.Queue,
 		queueName: ctx.Config.Worker.QueueName,
+		activity:  ctx.Queue,
 		cache:     ctx.Cache,
 		audit:     ctx.Audit,
 	}
@@ -92,6 +94,7 @@ func (Module) RegisterHTTP(ctx platformmodule.Context) {
 	ctx.ProtectedRouter.With(writeServers).Post("/server-connections/{id}/agent/update", handler.UpdateAgent)
 	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/status", handler.AgentStatus)
 	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/diagnostics", handler.AgentDiagnostics)
+	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/activity", handler.AgentActivity)
 	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/command", handler.RunCommand)
 	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/ticket", handler.IssueShellTicket)
 	ctx.PublicRouter.Get("/server-connections/{id}/ssh/ws", handler.Shell)
@@ -242,6 +245,20 @@ func (h *Handler) AgentDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, diagnostics)
+}
+
+func (h *Handler) AgentActivity(w http.ResponseWriter, r *http.Request) {
+	item, err := h.service.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "server_connection_not_found"})
+		return
+	}
+	activity, err := BuildAgentActivity(r.Context(), item, h.activity)
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_agent_activity_failed"})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, activity)
 }
 
 func (h *Handler) RunCommand(w http.ResponseWriter, r *http.Request) {

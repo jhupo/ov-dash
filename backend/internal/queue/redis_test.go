@@ -85,6 +85,25 @@ func TestRecordEnqueueAfterAuditFailureMarksFailedAndLogs(t *testing.T) {
 	}
 }
 
+func TestNormalizeJobListFilter(t *testing.T) {
+	filter := normalizeJobListFilter(JobListFilter{
+		Types:    []string{" server.collect ", "", "server.collect", "server.agent.update"},
+		ServerID: " srv_1 ",
+		Limit:    999,
+	})
+
+	if filter.ServerID != "srv_1" {
+		t.Fatalf("server id = %q", filter.ServerID)
+	}
+	if filter.Limit != 50 {
+		t.Fatalf("limit = %d, want default 50", filter.Limit)
+	}
+	wantTypes := []string{"server.collect", "server.agent.update"}
+	if strings.Join(filter.Types, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("types = %#v, want %#v", filter.Types, wantTypes)
+	}
+}
+
 type recordingAuditStore struct {
 	failedJobID   string
 	failedMessage string
@@ -129,6 +148,10 @@ func (s *recordingAuditStore) RecordJobRequeued(context.Context, string, JobReco
 }
 
 func (s *recordingAuditStore) ListJobs(context.Context, int) ([]JobRecord, error) {
+	return nil, nil
+}
+
+func (s *recordingAuditStore) ListJobsFiltered(context.Context, JobListFilter) ([]JobRecord, error) {
 	return nil, nil
 }
 

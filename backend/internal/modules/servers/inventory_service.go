@@ -37,6 +37,10 @@ func (s *InventoryService) List(ctx context.Context) ([]PublicConnection, error)
 	return public, nil
 }
 
+func (s *InventoryService) Get(ctx context.Context, id string) (Connection, error) {
+	return s.repository.Get(ctx, strings.TrimSpace(id))
+}
+
 func (s *InventoryService) Save(ctx context.Context, input SaveInput) (PublicConnection, error) {
 	input, err := normalizeSaveInput(input)
 	if err != nil {

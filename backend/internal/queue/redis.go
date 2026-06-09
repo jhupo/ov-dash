@@ -27,6 +27,7 @@ type AuditStore interface {
 	RecordJobCanceled(ctx context.Context, queueName string, job Job, message string) error
 	RecordJobRequeued(ctx context.Context, queueName string, oldJob JobRecord, newJob Job) error
 	ListJobs(ctx context.Context, limit int) ([]JobRecord, error)
+	ListJobsFiltered(ctx context.Context, filter JobListFilter) ([]JobRecord, error)
 	GetJob(ctx context.Context, id string) (JobRecord, error)
 	ListJobEvents(ctx context.Context, id string) ([]JobEvent, error)
 	AppendJobLog(ctx context.Context, id string, stream string, message string, metadata map[string]any) error
@@ -191,6 +192,13 @@ func (c *Client) ListJobs(ctx context.Context, limit int) ([]JobRecord, error) {
 		return []JobRecord{}, nil
 	}
 	return c.audit.ListJobs(ctx, limit)
+}
+
+func (c *Client) ListJobsFiltered(ctx context.Context, filter JobListFilter) ([]JobRecord, error) {
+	if c.audit == nil {
+		return []JobRecord{}, nil
+	}
+	return c.audit.ListJobsFiltered(ctx, filter)
 }
 
 func (c *Client) GetJob(ctx context.Context, id string) (JobRecord, error) {

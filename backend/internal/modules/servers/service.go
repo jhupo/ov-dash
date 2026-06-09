@@ -22,6 +22,10 @@ func (s *Service) List(ctx context.Context) ([]PublicConnection, error) {
 	return s.inventory.List(ctx)
 }
 
+func (s *Service) Get(ctx context.Context, id string) (Connection, error) {
+	return s.inventory.Get(ctx, id)
+}
+
 func (s *Service) Save(ctx context.Context, input SaveInput) (PublicConnection, error) {
 	return s.inventory.Save(ctx, input)
 }

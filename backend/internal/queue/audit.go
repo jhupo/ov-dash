@@ -44,6 +44,12 @@ type JobRecord struct {
 	UpdatedAt         time.Time      `json:"updated_at"`
 }
 
+type JobListFilter struct {
+	Types    []string
+	ServerID string
+	Limit    int
+}
+
 type JobLog struct {
 	ID        int64          `json:"id"`
 	JobID     string         `json:"job_id"`
@@ -342,6 +348,34 @@ func (s *PostgresAuditStore) ListJobs(ctx context.Context, limit int) ([]JobReco
 	return items, rows.Err()
 }
 
+func (s *PostgresAuditStore) ListJobsFiltered(ctx context.Context, filter JobListFilter) ([]JobRecord, error) {
+	filter = normalizeJobListFilter(filter)
+	rows, err := s.db.Query(ctx, `
+		SELECT id::text, queue_name, job_type, payload, idempotency_key, status, attempts, max_attempts,
+		       last_error, cancel_requested, cancel_requested_at, next_run_at, started_at,
+		       completed_at, dead_at, canceled_at, created_at, updated_at
+		FROM jobs_audit
+		WHERE (COALESCE(array_length($1::text[], 1), 0) = 0 OR job_type = ANY($1::text[]))
+		  AND ($2 = '' OR payload->>'server_id' = $2)
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, filter.Types, filter.ServerID, filter.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]JobRecord, 0)
+	for rows.Next() {
+		item, err := scanJobRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *PostgresAuditStore) GetJob(ctx context.Context, id string) (JobRecord, error) {
 	return scanJobRecord(s.db.QueryRow(ctx, `
 		SELECT id::text, queue_name, job_type, payload, idempotency_key, status, attempts, max_attempts,
@@ -540,6 +574,28 @@ func scanJobRecord(row jobRecordScanner) (JobRecord, error) {
 		item.Payload = map[string]any{}
 	}
 	return item, nil
+}
+
+func normalizeJobListFilter(filter JobListFilter) JobListFilter {
+	filter.ServerID = strings.TrimSpace(filter.ServerID)
+	seen := map[string]struct{}{}
+	types := make([]string, 0, len(filter.Types))
+	for _, jobType := range filter.Types {
+		jobType = strings.TrimSpace(jobType)
+		if jobType == "" {
+			continue
+		}
+		if _, ok := seen[jobType]; ok {
+			continue
+		}
+		seen[jobType] = struct{}{}
+		types = append(types, jobType)
+	}
+	filter.Types = types
+	if filter.Limit < 1 || filter.Limit > 200 {
+		filter.Limit = 50
+	}
+	return filter
 }
 
 func isUniqueViolation(err error) bool {

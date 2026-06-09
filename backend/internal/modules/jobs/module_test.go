@@ -319,6 +319,10 @@ func (q *fakeJobQueue) ListJobs(context.Context, int) ([]queue.JobRecord, error)
 	return nil, errors.New("not implemented")
 }
 
+func (q *fakeJobQueue) ListJobsFiltered(context.Context, queue.JobListFilter) ([]queue.JobRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (q *fakeJobQueue) GetJob(context.Context, string) (queue.JobRecord, error) {
 	return queue.JobRecord{}, errors.New("not implemented")
 }
