@@ -136,23 +136,28 @@ func (e *diagnosticSSHExecutor) Connect(ctx context.Context, item Connection) (*
 }
 
 func (e *diagnosticSSHExecutor) Run(ctx context.Context, client *ssh.Client, command string) error {
-	_, err := e.Output(ctx, client, command)
+	_, err := e.RunResult(ctx, client, command)
 	return err
 }
 
 func (e *diagnosticSSHExecutor) Output(ctx context.Context, client *ssh.Client, command string) (string, error) {
+	result, err := e.RunResult(ctx, client, command)
+	return result.Stdout, err
+}
+
+func (e *diagnosticSSHExecutor) RunResult(ctx context.Context, client *ssh.Client, command string) (SSHCommandResult, error) {
 	if e.outputErr != nil {
-		return "", e.outputErr
+		return SSHCommandResult{}, e.outputErr
 	}
 	version := e.statusVersion
 	if version == "" {
 		version = currentAgentVersion
 	}
 	if strings.Contains(command, " status") {
-		return `{"version":"` + version + `","port":19087,"socat":true,"nc":false,"service_active":true}` + "\n", nil
+		return SSHCommandResult{Stdout: `{"version":"` + version + `","port":19087,"socat":true,"nc":false,"service_active":true}` + "\n"}, nil
 	}
 	if strings.Contains(command, " once") {
-		return `{"cpu_percent":12,"cpu_cores":2,"memory_total_bytes":1024}` + "\n", nil
+		return SSHCommandResult{Stdout: `{"cpu_percent":12,"cpu_cores":2,"memory_total_bytes":1024}` + "\n"}, nil
 	}
-	return "", errors.New("unexpected command")
+	return SSHCommandResult{}, errors.New("unexpected command")
 }

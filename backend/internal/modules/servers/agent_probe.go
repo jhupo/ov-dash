@@ -36,24 +36,57 @@ func NewAgentProbe(ssh *SSHExecutor) *AgentProbe {
 type agentSSHExecutor interface {
 	Connect(ctx context.Context, item Connection) (*ssh.Client, error)
 	Run(ctx context.Context, client *ssh.Client, command string) error
+	RunResult(ctx context.Context, client *ssh.Client, command string) (SSHCommandResult, error)
 	Output(ctx context.Context, client *ssh.Client, command string) (string, error)
 }
 
 func (p *AgentProbe) Install(ctx context.Context, item Connection) error {
+	return p.InstallWithObserver(ctx, item, nil)
+}
+
+func (p *AgentProbe) InstallWithObserver(ctx context.Context, item Connection, observer CollectionObserver) error {
+	observeCollection(ctx, observer, item.ID, "agent.install.start", "", "installing server agent", nil)
 	client, err := p.ssh.Connect(ctx, item)
 	if err != nil {
+		observeCollection(ctx, observer, item.ID, "agent.install.failed", "", "connect for server agent install failed", map[string]any{"error": err.Error()})
 		return err
 	}
 	defer closeSSHClient(client)
 
-	if err := p.ssh.Run(ctx, client, privilegedInstallCommand(item.AgentPort)); err != nil {
+	result, err := p.ssh.RunResult(ctx, client, privilegedInstallCommand(item.AgentPort))
+	p.observeInstallOutput(ctx, observer, item.ID, result)
+	if err != nil {
+		observeCollection(ctx, observer, item.ID, "agent.install.failed", "", "server agent install command failed", map[string]any{"error": err.Error()})
 		return err
 	}
+	observeCollection(ctx, observer, item.ID, "agent.install.command_ok", "", "server agent install command completed", nil)
 	status, err := p.Wait(ctx, item)
 	if err != nil {
+		observeCollection(ctx, observer, item.ID, "agent.install.status_failed", "", "server agent status check failed after install", map[string]any{"error": err.Error()})
 		return err
 	}
-	return status.ValidateVersion()
+	if err := status.ValidateVersion(); err != nil {
+		observeCollection(ctx, observer, item.ID, "agent.install.version_failed", "", "server agent version check failed after install", map[string]any{
+			"version":          status.Version,
+			"expected_version": currentAgentVersion,
+			"error":            err.Error(),
+		})
+		return err
+	}
+	observeCollection(ctx, observer, item.ID, "agent.install.ready", "", "server agent is installed and current", map[string]any{
+		"version": status.Version,
+		"port":    status.Port,
+	})
+	return nil
+}
+
+func (p *AgentProbe) observeInstallOutput(ctx context.Context, observer CollectionObserver, serverID string, result SSHCommandResult) {
+	if strings.TrimSpace(result.Stdout) != "" {
+		observeCollection(ctx, observer, serverID, "agent.install.stdout", "", strings.TrimSpace(result.Stdout), nil)
+	}
+	if strings.TrimSpace(result.Stderr) != "" {
+		observeCollection(ctx, observer, serverID, "agent.install.stderr", "", strings.TrimSpace(result.Stderr), nil)
+	}
 }
 
 func (p *AgentProbe) EnsureCurrent(ctx context.Context, item Connection) error {

@@ -18,6 +18,11 @@ type SSHExecutor struct {
 	timeout time.Duration
 }
 
+type SSHCommandResult struct {
+	Stdout string
+	Stderr string
+}
+
 func NewSSHExecutor(timeout time.Duration) *SSHExecutor {
 	if timeout <= 0 {
 		timeout = 20 * time.Second
@@ -66,14 +71,19 @@ func (e *SSHExecutor) Connect(ctx context.Context, item Connection) (*ssh.Client
 }
 
 func (e *SSHExecutor) Run(ctx context.Context, client *ssh.Client, command string) error {
-	_, err := e.Output(ctx, client, command)
+	_, err := e.RunResult(ctx, client, command)
 	return err
 }
 
 func (e *SSHExecutor) Output(ctx context.Context, client *ssh.Client, command string) (string, error) {
+	result, err := e.RunResult(ctx, client, command)
+	return result.Stdout, err
+}
+
+func (e *SSHExecutor) RunResult(ctx context.Context, client *ssh.Client, command string) (SSHCommandResult, error) {
 	session, err := client.NewSession()
 	if err != nil {
-		return "", err
+		return SSHCommandResult{}, err
 	}
 	defer session.Close()
 
@@ -90,16 +100,23 @@ func (e *SSHExecutor) Output(ctx context.Context, client *ssh.Client, command st
 	select {
 	case <-ctx.Done():
 		_ = session.Close()
-		return "", ctx.Err()
+		return SSHCommandResult{
+			Stdout: stdout.String(),
+			Stderr: stderr.String(),
+		}, ctx.Err()
 	case err := <-done:
+		result := SSHCommandResult{
+			Stdout: stdout.String(),
+			Stderr: stderr.String(),
+		}
 		if err == nil {
-			return stdout.String(), nil
+			return result, nil
 		}
-		message := strings.TrimSpace(stderr.String())
+		message := strings.TrimSpace(result.Stderr)
 		if message != "" {
-			return "", fmt.Errorf("%w: %s", err, message)
+			return result, fmt.Errorf("%w: %s", err, message)
 		}
-		return "", err
+		return result, err
 	}
 }
 

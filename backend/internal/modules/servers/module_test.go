@@ -1,13 +1,19 @@
 package servers
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/platform/audit"
 	"ov-dash/backend/internal/platform/redact"
+	"ov-dash/backend/internal/queue"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func TestRecordAuditCapturesActorRequestAndMetadata(t *testing.T) {
@@ -45,6 +51,73 @@ func TestRecordAuditCapturesActorRequestAndMetadata(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentEnqueuesJobAndRecordsAudit(t *testing.T) {
+	auditRecorder := &fakeAuditRecorder{}
+	fakeQueue := &fakeServerJobQueue{}
+	handler := &Handler{
+		queue:     fakeQueue,
+		queueName: "jobs:test",
+		audit:     auditRecorder,
+	}
+	recorder := httptest.NewRecorder()
+	request := serverRequestWithID(http.MethodPost, "/server-connections/srv-1/agent/update", "srv-1")
+	request = request.WithContext(auth.ContextWithUser(request.Context(), auth.User{
+		ID:    "user-1",
+		Email: "ops@example.com",
+		Role:  "admin",
+	}))
+
+	handler.UpdateAgent(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	if fakeQueue.queueName != "jobs:test" {
+		t.Fatalf("queue name = %q", fakeQueue.queueName)
+	}
+	if fakeQueue.job.Type != "server.agent.update" || fakeQueue.job.Payload["server_id"] != "srv-1" {
+		t.Fatalf("job = %#v", fakeQueue.job)
+	}
+	if fakeQueue.job.IdempotencyKey != ServerAgentUpdateIdempotencyKey("srv-1") {
+		t.Fatalf("idempotency key = %q", fakeQueue.job.IdempotencyKey)
+	}
+	entry := auditRecorder.single(t)
+	if entry.Action != "servers.agent.update" || entry.Result != "success" || entry.ResourceID != "srv-1" {
+		t.Fatalf("audit entry = %#v", entry)
+	}
+	if entry.Metadata["job_id"] != fakeQueue.job.ID || entry.Metadata["idempotency_key"] != fakeQueue.job.IdempotencyKey {
+		t.Fatalf("audit metadata = %#v", entry.Metadata)
+	}
+}
+
+func TestUpdateAgentMapsDuplicateJob(t *testing.T) {
+	auditRecorder := &fakeAuditRecorder{}
+	handler := &Handler{
+		queue:     &fakeServerJobQueue{err: queue.ErrDuplicateIdempotencyKey},
+		queueName: "jobs:test",
+		audit:     auditRecorder,
+	}
+	recorder := httptest.NewRecorder()
+	request := serverRequestWithID(http.MethodPost, "/server-connections/srv-1/agent/update", "srv-1")
+
+	handler.UpdateAgent(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	entry := auditRecorder.single(t)
+	if entry.Action != "servers.agent.update" || entry.Result != "failure" {
+		t.Fatalf("audit entry = %#v", entry)
+	}
+}
+
+func serverRequestWithID(method string, target string, id string) *http.Request {
+	request := httptest.NewRequest(method, target, bytes.NewBuffer(nil))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("id", id)
+	return request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeCtx))
+}
+
 type fakeAuditRecorder struct {
 	entries []audit.Entry
 }
@@ -60,4 +133,22 @@ func (r *fakeAuditRecorder) single(t *testing.T) audit.Entry {
 		t.Fatalf("audit entries = %d, want 1: %#v", len(r.entries), r.entries)
 	}
 	return r.entries[0]
+}
+
+type fakeServerJobQueue struct {
+	queueName string
+	job       queue.Job
+	err       error
+}
+
+func (q *fakeServerJobQueue) Enqueue(_ context.Context, queueName string, job queue.Job) error {
+	if q.err != nil {
+		return q.err
+	}
+	if job.ID == "" {
+		return errors.New("job id is required")
+	}
+	q.queueName = queueName
+	q.job = job
+	return nil
 }

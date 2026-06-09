@@ -36,6 +36,10 @@ func (c *Collector) Install(ctx context.Context, id string) error {
 	return c.coordinator.Install(ctx, id)
 }
 
+func (c *Collector) InstallWithObserver(ctx context.Context, id string, observer CollectionObserver) error {
+	return c.coordinator.InstallWithObserver(ctx, id, observer)
+}
+
 func (c *Collector) AgentStatus(ctx context.Context, id string) (AgentStatus, error) {
 	return c.coordinator.Status(ctx, id)
 }

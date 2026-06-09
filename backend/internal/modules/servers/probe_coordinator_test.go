@@ -74,17 +74,18 @@ func (r *probeRepositoryStub) MonitorActive(ctx context.Context) (bool, error) {
 }
 
 type serverProbeStub struct {
-	installErr     error
-	ensureErr      error
-	ensureCalls    int
-	installCalls   int
-	collectErr     error
-	collectOnceErr error
-	dialErr        error
-	metric         Metric
-	onceMetric     Metric
-	status         AgentStatus
-	statusErr      error
+	installErr          error
+	ensureErr           error
+	ensureCalls         int
+	installCalls        int
+	installWithObserver bool
+	collectErr          error
+	collectOnceErr      error
+	dialErr             error
+	metric              Metric
+	onceMetric          Metric
+	status              AgentStatus
+	statusErr           error
 }
 
 type collectionObserverStub struct {
@@ -97,6 +98,15 @@ func (o *collectionObserverStub) ObserveCollection(ctx context.Context, event Co
 
 func (p *serverProbeStub) Install(ctx context.Context, item Connection) error {
 	p.installCalls++
+	return p.installErr
+}
+
+func (p *serverProbeStub) InstallWithObserver(ctx context.Context, item Connection, observer CollectionObserver) error {
+	p.installCalls++
+	if p.installWithObserver {
+		observeCollection(ctx, observer, item.ID, "agent.install.start", "", "installing server agent", nil)
+		observeCollection(ctx, observer, item.ID, "agent.install.ready", "", "server agent is installed and current", map[string]any{"version": currentAgentVersion})
+	}
 	return p.installErr
 }
 

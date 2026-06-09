@@ -86,6 +86,10 @@ func (c *ProbeCoordinator) Collect(ctx context.Context, id string) error {
 }
 
 func (c *ProbeCoordinator) Install(ctx context.Context, id string) error {
+	return c.InstallWithObserver(ctx, id, nil)
+}
+
+func (c *ProbeCoordinator) InstallWithObserver(ctx context.Context, id string, observer CollectionObserver) error {
 	item, err := c.repository.Get(ctx, id)
 	if err != nil {
 		return err
@@ -93,15 +97,26 @@ func (c *ProbeCoordinator) Install(ctx context.Context, id string) error {
 	if err := c.repository.MarkCollecting(ctx, item.ID); err != nil {
 		return err
 	}
-	if err := c.probe.Install(ctx, item); err != nil {
-		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
-		return err
+	installer, ok := c.probe.(interface {
+		InstallWithObserver(context.Context, Connection, CollectionObserver) error
+	})
+	if ok {
+		err = installer.InstallWithObserver(ctx, item, observer)
+	} else {
+		err = c.probe.Install(ctx, item)
 	}
-	metric, err := c.collectAfterInstall(ctx, item)
 	if err != nil {
 		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
 		return err
 	}
+	observeCollection(ctx, observer, item.ID, "agent.install.collect", "", "collecting metric after agent install", nil)
+	metric, err := c.collectAfterInstall(ctx, item)
+	if err != nil {
+		_ = c.repository.MarkCollectFailed(ctx, item.ID, trimError(err))
+		observeCollection(ctx, observer, item.ID, "agent.install.collect_failed", "", "metric collection after agent install failed", map[string]any{"error": err.Error()})
+		return err
+	}
+	observeCollection(ctx, observer, item.ID, "agent.install.collect_ok", "", "metric after agent install saved", map[string]any{"latency_ms": metric.LatencyMS})
 	return c.repository.SaveAgentMetric(ctx, metric)
 }
 
@@ -249,13 +264,20 @@ func (c *ProbeCoordinator) annotateCollectError(ctx context.Context, item Connec
 }
 
 func (c *ProbeCoordinator) observe(ctx context.Context, serverID string, stage string, mode string, message string, metadata map[string]any) {
-	if c == nil || c.observer == nil {
+	if c == nil {
+		return
+	}
+	observeCollection(ctx, c.observer, serverID, stage, mode, message, metadata)
+}
+
+func observeCollection(ctx context.Context, observer CollectionObserver, serverID string, stage string, mode string, message string, metadata map[string]any) {
+	if observer == nil {
 		return
 	}
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
-	c.observer.ObserveCollection(ctx, CollectionEvent{
+	observer.ObserveCollection(ctx, CollectionEvent{
 		ServerID: serverID,
 		Stage:    stage,
 		Mode:     mode,

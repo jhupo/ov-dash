@@ -15,6 +15,7 @@ import (
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
 	"ov-dash/backend/internal/platform/redact"
+	"ov-dash/backend/internal/queue"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -24,8 +25,14 @@ type Module struct{}
 type Handler struct {
 	service   *Service
 	collector *Collector
+	queue     serverJobQueue
+	queueName string
 	cache     cacheStore
 	audit     audit.RequestRecorder
+}
+
+type serverJobQueue interface {
+	Enqueue(ctx context.Context, queueName string, job queue.Job) error
 }
 
 type cacheStore interface {
@@ -67,6 +74,8 @@ func (Module) RegisterHTTP(ctx platformmodule.Context) {
 	handler := &Handler{
 		service:   NewService(repository),
 		collector: NewCollector(repository),
+		queue:     ctx.Queue,
+		queueName: ctx.Config.Worker.QueueName,
 		cache:     ctx.Cache,
 		audit:     ctx.Audit,
 	}
@@ -185,15 +194,32 @@ func (h *Handler) TouchMonitor(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	serverID := chi.URLParam(r, "id")
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-	if err := h.collector.Install(ctx, serverID); err != nil {
-		h.recordAudit(r, "servers.agent.update", serverID, "failure", err.Error(), nil)
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if h.queue == nil {
+		h.recordAudit(r, "servers.agent.update", serverID, "failure", "job_queue_unavailable", nil)
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "job_queue_unavailable"})
 		return
 	}
-	h.recordAudit(r, "servers.agent.update", serverID, "success", "", nil)
-	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	job, err := NewAgentUpdateJob(serverID)
+	if err != nil {
+		h.recordAudit(r, "servers.agent.update", serverID, "failure", err.Error(), nil)
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := h.queue.Enqueue(r.Context(), h.queueName, job); err != nil {
+		h.recordAudit(r, "servers.agent.update", serverID, "failure", err.Error(), nil)
+		if errors.Is(err, queue.ErrDuplicateIdempotencyKey) {
+			httpx.WriteJSON(w, http.StatusConflict, map[string]string{"error": "duplicate_agent_update_job"})
+			return
+		}
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "agent_update_enqueue_failed"})
+		return
+	}
+	h.recordAudit(r, "servers.agent.update", serverID, "success", "", map[string]any{
+		"job_id":          job.ID,
+		"job_type":        job.Type,
+		"idempotency_key": job.IdempotencyKey,
+	})
+	httpx.WriteJSON(w, http.StatusAccepted, job)
 }
 
 func (h *Handler) AgentStatus(w http.ResponseWriter, r *http.Request) {
