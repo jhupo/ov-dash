@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "release_id": "ov-dash-0.2.5",
+  "version": "0.2.5",
+  "sequence": 20,
+  "published_at": "2026-08-09T16:54:56Z",
+  "expires_at": "2026-11-07T16:54:56Z",
+  "minimum_version": "0.0.0",
+  "images": {
+    "backend": "ghcr.io/jhupo/ov-dash-backend@sha256:a0b0b287a2901ac9cb06260bc95af82d1c29cc158e1893edcd2609ac0cef4883",
+    "frontend": "ghcr.io/jhupo/ov-dash-frontend@sha256:247d9de3c402f9bfdbb42847dabe59b22e4dacd7600707ba20db91f819652827"
+  },
+  "database": {
+    "from_schema": 0,
+    "to_schema": 28,
+    "strategy": "snapshot",
+    "transactional": false,
+    "backup_required": true
+  },
+  "health": {
+    "timeout_seconds": 300,
+    "stability_seconds": 15
+  }
+}
