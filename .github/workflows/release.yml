@@ -126,7 +126,7 @@ jobs:
               }
               const signature = crypto.sign(null, manifestBytes, privateKey)
               fs.writeFileSync(`${manifestPath}.sig`, `${signature.toString('base64')}\n`)
-              NODE
+          NODE
             fi
             cp -R migrations "../dist/${package}/migrations"
             cp README.md "../dist/${package}/README-backend.md"
