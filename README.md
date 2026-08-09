@@ -152,7 +152,7 @@ Common environment variables:
 - `REDIS_ADDR`: Redis host and port.
 - `REDIS_PASSWORD`: Redis password.
 - `REDIS_PREFIX`: Redis key prefix, default `ov-dash`.
-- `WORKER_QUEUE_NAME`: River queue name, default `jobs:default`.
+- `WORKER_QUEUE_NAME`: River queue name, default `jobs-default`.
 - `WORKER_CONCURRENCY`: Worker goroutine count, default `4`.
 - `APP_SECRET_ACTIVE_KEY_ID`: active secret encryption key ID.
 - `APP_SECRET_KEYS_JSON`: JSON keyring used to decrypt stored secrets and encrypt with the active key.

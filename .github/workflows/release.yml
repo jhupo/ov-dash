@@ -404,6 +404,11 @@ jobs:
       - signed-release
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -421,3 +426,64 @@ jobs:
             dist/**/release.json
             dist/**/release.json.sig
           generate_release_notes: true
+
+      - name: Publish release metadata branch
+        shell: bash
+        env:
+          METADATA_BRANCH: release-metadata
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${RELEASE_TAG#v}"
+          EXPECTED_RELEASE_ID="ov-dash-${VERSION}"
+          mapfile -t LATEST_CANDIDATES < <(find dist -type f -name latest.json -print)
+          if (( ${#LATEST_CANDIDATES[@]} != 1 )); then
+            echo "expected exactly one latest.json, found ${#LATEST_CANDIDATES[@]}" >&2
+            exit 1
+          fi
+          LATEST_PATH="${LATEST_CANDIDATES[0]}"
+          RELEASE_ID="$(node -e '
+            const fs = require("fs")
+            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+            if (typeof value.release_id !== "string" || value.release_id.length === 0) process.exit(1)
+            process.stdout.write(value.release_id)
+          ' "${LATEST_PATH}")"
+          if [[ "${RELEASE_ID}" != "${EXPECTED_RELEASE_ID}" ]]; then
+            echo "latest.json release_id ${RELEASE_ID} does not match ${EXPECTED_RELEASE_ID}" >&2
+            exit 1
+          fi
+
+          mapfile -t MANIFEST_CANDIDATES < <(find dist -type f -path "*/${RELEASE_ID}/release.json" -print)
+          if (( ${#MANIFEST_CANDIDATES[@]} != 1 )); then
+            echo "expected exactly one ${RELEASE_ID}/release.json, found ${#MANIFEST_CANDIDATES[@]}" >&2
+            exit 1
+          fi
+          MANIFEST_PATH="${MANIFEST_CANDIDATES[0]}"
+          SIGNATURE_PATH="${MANIFEST_PATH}.sig"
+          test -f "${SIGNATURE_PATH}"
+
+          METADATA_DIR="${RUNNER_TEMP}/release-metadata"
+          if git ls-remote --exit-code --heads origin "${METADATA_BRANCH}" >/dev/null 2>&1; then
+            git fetch origin "${METADATA_BRANCH}"
+            git worktree add --detach "${METADATA_DIR}" FETCH_HEAD
+          else
+            git worktree add --detach "${METADATA_DIR}" HEAD
+            git -C "${METADATA_DIR}" checkout --orphan "${METADATA_BRANCH}"
+            git -C "${METADATA_DIR}" rm -rf .
+          fi
+
+          install -m 0644 "${LATEST_PATH}" "${METADATA_DIR}/latest.json"
+          install -d "${METADATA_DIR}/${RELEASE_ID}"
+          install -m 0644 "${MANIFEST_PATH}" "${METADATA_DIR}/${RELEASE_ID}/release.json"
+          install -m 0644 "${SIGNATURE_PATH}" "${METADATA_DIR}/${RELEASE_ID}/release.json.sig"
+
+          git -C "${METADATA_DIR}" config user.name "github-actions[bot]"
+          git -C "${METADATA_DIR}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "${METADATA_DIR}" add latest.json "${RELEASE_ID}/release.json" "${RELEASE_ID}/release.json.sig"
+          if git -C "${METADATA_DIR}" diff --cached --quiet; then
+            echo "release metadata is already up to date"
+            exit 0
+          fi
+          git -C "${METADATA_DIR}" commit -m "Publish ${RELEASE_TAG} metadata"
+          git -C "${METADATA_DIR}" push origin "HEAD:${METADATA_BRANCH}"

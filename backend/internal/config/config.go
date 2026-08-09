@@ -150,7 +150,7 @@ func Load() Config {
 			Prefix:   env("REDIS_PREFIX", "ov-dash"),
 		},
 		Worker: WorkerConfig{
-			QueueName:   env("WORKER_QUEUE_NAME", "jobs:default"),
+			QueueName:   env("WORKER_QUEUE_NAME", "jobs-default"),
 			JobTimeout:  durationEnv("WORKER_JOB_TIMEOUT", 5*time.Minute),
 			Concurrency: intEnv("WORKER_CONCURRENCY", 4),
 			RescueAfter: durationEnv("WORKER_RESCUE_AFTER", 15*time.Minute),
