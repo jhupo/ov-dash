@@ -23,21 +23,25 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "tasks"
-}
-
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.TasksRead)).Get("/tasks", handler.List)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.TasksWrite)).Delete("/tasks", handler.Delete)
-}
-
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{
-		capability.TasksRead,
-		capability.TasksWrite,
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "tasks",
+		Title:       "Tasks",
+		Description: "Task listing and cleanup API.",
+		Kind:        "service",
+		Tags:        []string{"tasks"},
 	}
+}
+
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{service: NewService(NewRepository(ctx.DB))}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.TasksRead)).Get("/tasks", handler.List)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.TasksWrite)).Delete("/tasks", handler.Delete)
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(capability.TasksRead, capability.TasksWrite)
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

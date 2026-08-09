@@ -6,16 +6,18 @@ import (
 	"errors"
 
 	"ov-dash/backend/internal/db"
+	"ov-dash/backend/internal/platform/secret"
 
 	"github.com/jackc/pgx/v5"
 )
 
 type Repository struct {
-	db *db.Pool
+	db      *db.Pool
+	secrets *secret.Store
 }
 
-func NewRepository(db *db.Pool) *Repository {
-	return &Repository{db: db}
+func NewRepository(db *db.Pool, secrets *secret.Store) *Repository {
+	return &Repository{db: db, secrets: secrets}
 }
 
 func (r *Repository) List(ctx context.Context) ([]Page, error) {
@@ -212,8 +214,25 @@ func (r *Repository) Update(ctx context.Context, input SavePageInput) (Page, err
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM wiki_pages WHERE id = $1`, id)
-	return err
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	secretIDs, err := listResourceSecretIDs(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM wiki_pages WHERE id = $1`, id); err != nil {
+		return err
+	}
+	for _, secretID := range secretIDs {
+		if err := r.secrets.DeleteTx(ctx, tx, secretID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *Repository) CreateAttachment(ctx context.Context, input SaveAttachmentInput) (Attachment, error) {
@@ -313,6 +332,10 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 			if err := json.Unmarshal(resourcesJSON, &item.Resources); err != nil {
 				return nil, err
 			}
+			for index := range item.Resources {
+				item.Resources[index].Password = ""
+				item.Resources[index].PasswordSecretID = ""
+			}
 		}
 		items = append(items, item)
 	}
@@ -320,11 +343,16 @@ func (r *Repository) ListRevisions(ctx context.Context, pageID string) ([]Revisi
 }
 
 func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID string, resources []SaveResourceInput) ([]Resource, error) {
+	oldSecretIDs, err := listResourceSecretIDs(ctx, tx, pageID)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM wiki_page_resources WHERE page_id = $1`, pageID); err != nil {
 		return nil, err
 	}
 
 	items := make([]Resource, 0, len(resources))
+	retainedSecretIDs := make(map[string]struct{}, len(resources))
 	for index, resource := range resources {
 		resourceID := resource.ID
 		if resourceID == "" {
@@ -338,6 +366,20 @@ func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID str
 		if sortOrder == 0 {
 			sortOrder = index + 1
 		}
+		passwordSecretID := ""
+		if resource.Password != "" {
+			passwordSecretID, err = r.secrets.PutTx(
+				ctx,
+				tx,
+				"wiki_page_resources:"+resourceID,
+				"password",
+				resource.Password,
+			)
+			if err != nil {
+				return nil, err
+			}
+			retainedSecretIDs[passwordSecretID] = struct{}{}
+		}
 
 		row := tx.QueryRow(ctx, `
 			INSERT INTO wiki_page_resources (
@@ -350,10 +392,11 @@ func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID str
 				url,
 				username,
 				password,
+				password_secret_id,
 				note,
 				sort_order
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '', $9, $10, $11)
 			RETURNING id,
 			          page_id,
 			          resource_type,
@@ -362,12 +405,12 @@ func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID str
 			          port,
 			          url,
 			          username,
-			          password,
+			          password_secret_id,
 			          note,
 			          sort_order,
 			          created_at,
 			          updated_at
-		`, resourceID, pageID, resource.ResourceType, resource.Title, resource.Host, resource.Port, resource.URL, resource.Username, resource.Password, resource.Note, sortOrder)
+		`, resourceID, pageID, resource.ResourceType, resource.Title, resource.Host, resource.Port, resource.URL, resource.Username, passwordSecretID, resource.Note, sortOrder)
 		var item Resource
 		err := row.Scan(
 			&item.ID,
@@ -378,7 +421,7 @@ func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID str
 			&item.Port,
 			&item.URL,
 			&item.Username,
-			&item.Password,
+			&item.PasswordSecretID,
 			&item.Note,
 			&item.SortOrder,
 			&item.CreatedAt,
@@ -387,7 +430,16 @@ func (r *Repository) replaceResources(ctx context.Context, tx pgx.Tx, pageID str
 		if err != nil {
 			return nil, err
 		}
+		item.Password = resource.Password
 		items = append(items, item)
+	}
+	for _, secretID := range oldSecretIDs {
+		if _, retained := retainedSecretIDs[secretID]; retained {
+			continue
+		}
+		if err := r.secrets.DeleteTx(ctx, tx, secretID); err != nil {
+			return nil, err
+		}
 	}
 
 	return items, nil
@@ -403,7 +455,7 @@ func (r *Repository) listResources(ctx context.Context, pageID string) ([]Resour
 		       port,
 		       url,
 		       username,
-		       password,
+		       password_secret_id,
 		       note,
 		       sort_order,
 		       created_at,
@@ -435,7 +487,7 @@ func (r *Repository) listResources(ctx context.Context, pageID string) ([]Resour
 			&item.Port,
 			&item.URL,
 			&item.Username,
-			&item.Password,
+			&item.PasswordSecretID,
 			&item.Note,
 			&item.SortOrder,
 			&item.CreatedAt,
@@ -445,7 +497,20 @@ func (r *Repository) listResources(ctx context.Context, pageID string) ([]Resour
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for index := range items {
+		if items[index].PasswordSecretID == "" {
+			continue
+		}
+		items[index].Password, err = r.secrets.Get(ctx, items[index].PasswordSecretID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
 }
 
 func (r *Repository) insertRevision(ctx context.Context, tx pgx.Tx, page Page, actorID string) error {
@@ -453,7 +518,8 @@ func (r *Repository) insertRevision(ctx context.Context, tx pgx.Tx, page Page, a
 	if err != nil {
 		return err
 	}
-	resourcesJSONBytes, err := json.Marshal(page.Resources)
+	revisionResources := revisionSnapshotResources(page.Resources)
+	resourcesJSONBytes, err := json.Marshal(revisionResources)
 	if err != nil {
 		return err
 	}
@@ -488,6 +554,40 @@ func (r *Repository) insertRevision(ctx context.Context, tx pgx.Tx, page Page, a
 		)
 	`, revisionID, page.ID, page.Title, page.PageType, page.Category, page.Summary, page.ContentMD, page.Tags, resourcesJSON, actorID)
 	return err
+}
+
+func listResourceSecretIDs(ctx context.Context, tx pgx.Tx, pageID string) ([]string, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT password_secret_id
+		FROM wiki_page_resources
+		WHERE page_id = $1
+		  AND password_secret_id <> ''
+		FOR UPDATE
+	`, pageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	secretIDs := make([]string, 0)
+	for rows.Next() {
+		var secretID string
+		if err := rows.Scan(&secretID); err != nil {
+			return nil, err
+		}
+		secretIDs = append(secretIDs, secretID)
+	}
+	return secretIDs, rows.Err()
+}
+
+func revisionSnapshotResources(resources []Resource) []Resource {
+	snapshot := make([]Resource, len(resources))
+	copy(snapshot, resources)
+	for index := range snapshot {
+		snapshot[index].Password = ""
+		snapshot[index].PasswordSecretID = ""
+	}
+	return snapshot
 }
 
 func attachResources(pages []Page, resources []Resource) {

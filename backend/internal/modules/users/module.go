@@ -18,17 +18,24 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "users"
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "users",
+		Title:       "Users",
+		Description: "User directory API.",
+		Kind:        "service",
+		Tags:        []string{"users", "identity"},
+	}
 }
 
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.UsersRead)).Get("/users", handler.List)
-}
-
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{capability.UsersRead}
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{service: NewService(NewRepository(ctx.DB))}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.UsersRead)).Get("/users", handler.List)
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(capability.UsersRead)
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

@@ -18,17 +18,24 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "chats"
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "chats",
+		Title:       "Chats",
+		Description: "Chat conversation listing API.",
+		Kind:        "service",
+		Tags:        []string{"chats"},
+	}
 }
 
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ChatsRead)).Get("/chats", handler.ListConversations)
-}
-
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{capability.ChatsRead}
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{service: NewService(NewRepository(ctx.DB))}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ChatsRead)).Get("/chats", handler.ListConversations)
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(capability.ChatsRead)
 }
 
 func (h *Handler) ListConversations(w http.ResponseWriter, r *http.Request) {

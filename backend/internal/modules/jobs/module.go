@@ -1,36 +1,28 @@
 package jobs
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
-	"ov-dash/backend/internal/config"
-	"ov-dash/backend/internal/events"
 	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/platform/audit"
 	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
-	"ov-dash/backend/internal/platform/redact"
 	"ov-dash/backend/internal/queue"
 
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 type Module struct{}
 
 type Handler struct {
-	events    *events.Bus
 	queue     jobQueue
 	queueName string
 	registry  *platformmodule.JobRegistry
@@ -51,6 +43,7 @@ type CreateJobRequest struct {
 	Type           string         `json:"type"`
 	Payload        map[string]any `json:"payload"`
 	IdempotencyKey string         `json:"idempotency_key"`
+	ScheduledAt    *time.Time     `json:"scheduled_at"`
 }
 
 type RequeueJobRequest struct {
@@ -61,50 +54,47 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "jobs"
-}
-
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{
-		events:    ctx.Events,
-		queue:     ctx.Queue,
-		queueName: ctx.Config.Worker.QueueName,
-		registry:  ctx.Jobs,
-		audit:     ctx.Audit,
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "jobs",
+		Title:       "Jobs",
+		Description: "Platform job registry, queue operations, job logs, cancellation, and requeue controls.",
+		Kind:        "platform",
+		Tags:        []string{"platform", "jobs", "worker"},
 	}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs", handler.List)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs/{id}", handler.Get)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs/{id}/events", handler.Events)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs/{id}/logs", handler.Logs)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsCreate)).Post("/jobs", handler.Create)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsManage)).Post("/jobs/{id}/cancel", handler.Cancel)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsManage)).Post("/jobs/{id}/requeue", handler.Requeue)
 }
 
-func (Module) RegisterJobs(ctx platformmodule.Context, reg *platformmodule.JobRegistry) error {
-	if err := reg.Register(platformmodule.JobDefinition{
-		Type:        "python.script",
-		Description: "Run a Python script from the configured scripts directory.",
-		MaxAttempts: queue.DefaultMaxAttempts,
-		Handler:     NewPythonScriptHandler(ctx.Config.Python, ctx.Logger, ctx.Queue),
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{
+			queue:     ctx.Queue,
+			queueName: ctx.Config.Worker.QueueName,
+			registry:  ctx.Jobs,
+			audit:     ctx.Audit,
+		}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs", handler.List)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs/{id}", handler.Get)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs/{id}/events", handler.Events)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsRead)).Get("/jobs/{id}/logs", handler.Logs)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsCreate)).Post("/jobs", handler.Create)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsManage)).Post("/jobs/{id}/cancel", handler.Cancel)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.JobsManage)).Post("/jobs/{id}/requeue", handler.Requeue)
 	}); err != nil {
 		return err
 	}
-	return reg.Register(platformmodule.JobDefinition{
+	if err := reg.Job(platformmodule.JobDefinition{
 		Type:        "noop",
 		Description: "No-op job for platform smoke tests.",
 		MaxAttempts: 1,
 		Handler:     NoopHandler{},
-	})
-}
-
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(
 		capability.JobsRead,
 		capability.JobsCreate,
 		capability.JobsManage,
-	}
+	)
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +123,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job.IdempotencyKey = input.IdempotencyKey
+	job.ScheduledAt = input.ScheduledAt
 	if def.MaxAttempts > 0 {
 		job.MaxAttempts = def.MaxAttempts
 	}
@@ -146,11 +137,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "enqueue_failed"})
 		return
 	}
-	h.events.Publish(r.Context(), events.New("job.enqueued", "http.jobs", map[string]any{
-		"job_id":   job.ID,
-		"job_type": job.Type,
-	}))
-
 	httpx.WriteJSON(w, http.StatusAccepted, job)
 }
 
@@ -252,89 +238,6 @@ func (h *Handler) recordAudit(r *http.Request, action string, resourceID string,
 		Message:    message,
 		Metadata:   metadata,
 	})
-}
-
-type PythonScriptHandler struct {
-	cfg    config.PythonConfig
-	logger *zap.Logger
-	logs   jobLogAppender
-}
-
-type jobLogAppender interface {
-	AppendJobLog(ctx context.Context, id string, stream string, message string, metadata map[string]any) error
-}
-
-type pythonScriptPayload struct {
-	Script string         `json:"script"`
-	Args   []string       `json:"args"`
-	Input  map[string]any `json:"input"`
-}
-
-func NewPythonScriptHandler(cfg config.PythonConfig, logger *zap.Logger, logs ...jobLogAppender) *PythonScriptHandler {
-	handler := &PythonScriptHandler{cfg: cfg, logger: logger}
-	if len(logs) > 0 {
-		handler.logs = logs[0]
-	}
-	return handler
-}
-
-func (h *PythonScriptHandler) Handle(ctx context.Context, job queue.Job) error {
-	var payload pythonScriptPayload
-	raw, err := json.Marshal(job.Payload)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
-	}
-	if payload.Script == "" {
-		return errors.New("script is required")
-	}
-	if !filepath.IsLocal(payload.Script) {
-		return fmt.Errorf("script path must be local: %s", payload.Script)
-	}
-	scriptPath := filepath.Clean(filepath.Join(h.cfg.ScriptsDir, payload.Script))
-
-	args := append([]string{scriptPath}, payload.Args...)
-	cmd := exec.CommandContext(ctx, h.cfg.Bin, args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	h.recordScriptOutput(ctx, job, payload.Script, stdout.Bytes(), stderr.Bytes())
-	if err != nil {
-		return fmt.Errorf("run python script: %w", err)
-	}
-	return nil
-}
-
-func (h *PythonScriptHandler) recordScriptOutput(ctx context.Context, job queue.Job, script string, stdout []byte, stderr []byte) {
-	if len(stdout) > 0 && h.logger != nil {
-		h.logger.Info("python script stdout", zap.String("job_id", job.ID), zap.String("output", redact.Text(strings.ToValidUTF8(string(stdout), "\uFFFD"))))
-	}
-	if len(stderr) > 0 && h.logger != nil {
-		h.logger.Info("python script stderr", zap.String("job_id", job.ID), zap.String("output", redact.Text(strings.ToValidUTF8(string(stderr), "\uFFFD"))))
-	}
-	if h.logs == nil {
-		return
-	}
-	metadata := map[string]any{
-		"handler": "python.script",
-		"script":  script,
-	}
-	h.appendScriptLog(ctx, job.ID, "stdout", stdout, metadata)
-	h.appendScriptLog(ctx, job.ID, "stderr", stderr, metadata)
-}
-
-func (h *PythonScriptHandler) appendScriptLog(ctx context.Context, jobID string, stream string, output []byte, metadata map[string]any) {
-	if len(output) == 0 {
-		return
-	}
-	message := strings.ToValidUTF8(string(output), "\uFFFD")
-	if err := h.logs.AppendJobLog(ctx, jobID, stream, strings.TrimRight(message, "\r\n"), metadata); err != nil && h.logger != nil {
-		h.logger.Error("append python script output job log", zap.String("job_id", jobID), zap.String("stream", stream), zap.Error(err))
-	}
 }
 
 type NoopHandler struct{}

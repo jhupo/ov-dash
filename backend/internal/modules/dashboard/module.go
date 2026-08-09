@@ -18,17 +18,24 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "dashboard"
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "dashboard",
+		Title:       "Dashboard",
+		Description: "Dashboard snapshot API.",
+		Kind:        "service",
+		Tags:        []string{"dashboard", "overview"},
+	}
 }
 
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService()}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.DashboardRead)).Get("/dashboard", handler.Snapshot)
-}
-
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{capability.DashboardRead}
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{service: NewService()}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.DashboardRead)).Get("/dashboard", handler.Snapshot)
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(capability.DashboardRead)
 }
 
 func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {

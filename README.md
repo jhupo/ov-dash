@@ -4,9 +4,9 @@ ov-dash is an operations dashboard foundation with:
 
 - frontend: `satnaing/shadcn-admin` under `frontend/`
 - backend: Go API under `backend/cmd/api`
-- worker: Go worker under `backend/cmd/worker`, with optional Python script execution
-- data: PostgreSQL
-- queue: Redis
+- worker: Go River worker under `backend/cmd/worker`
+- data and queue: PostgreSQL with River
+- cache: Redis
 - deployment: Docker Compose under `docker-compose.yml`
 
 ## Layout
@@ -114,17 +114,17 @@ The backend is a Go service skeleton under `backend/` with separate API and work
 ### Layout
 
 - `backend/cmd/api`: HTTP API process.
-- `backend/cmd/worker`: Redis queue worker process.
+- `backend/cmd/worker`: River/PostgreSQL job worker process.
 - `backend/internal/platform`: Shared backend runtime for database, cache, queue, events, logs, and proxy.
 - `backend/internal/cache`: Redis-backed cache facade.
 - `backend/internal/config`: Environment-driven application configuration.
 - `backend/internal/database`: Database management helpers, including SQL migrations.
 - `backend/internal/db`: PostgreSQL connection pool setup via `pgx`.
-- `backend/internal/events`: In-process event flow center.
+- `backend/internal/events`: In-process event bus and durable PostgreSQL outbox.
 - `backend/internal/http`: Router, middleware, health checks, and job enqueue endpoint.
 - `backend/internal/modules/proxy`: SOCKS5 proxy settings and reusable proxied HTTP client factory.
-- `backend/internal/queue`: Redis-backed queue primitives.
-- `backend/internal/worker`: Worker runner and Python script executor.
+- `backend/internal/queue`: River/PostgreSQL queue, job audit, logs, cancellation, and requeue.
+- `backend/internal/worker`: River worker runner and durable event dispatcher.
 - `backend/pkg/logging`: Shared Zap logger factory.
 
 ### Local run
@@ -146,21 +146,20 @@ Common environment variables:
 - `HTTP_HOST`: API listen host, default `0.0.0.0`.
 - `HTTP_PORT`: API listen port, default `8080`.
 - `HTTP_ALLOWED_ORIGINS`: comma-separated browser origins.
+- `HTTP_TRUSTED_PROXY_CIDRS`: comma-separated proxy networks allowed to provide client IP headers.
+- `COOKIE_SECURE`: require HTTPS-only session cookies.
 - `POSTGRES_DSN`: PostgreSQL DSN.
 - `REDIS_ADDR`: Redis host and port.
 - `REDIS_PASSWORD`: Redis password.
 - `REDIS_PREFIX`: Redis key prefix, default `ov-dash`.
-- `WORKER_QUEUE_NAME`: Redis queue name, default `jobs:default`.
+- `WORKER_QUEUE_NAME`: River queue name, default `jobs:default`.
 - `WORKER_CONCURRENCY`: Worker goroutine count, default `4`.
-- `PYTHON_BIN`: Python executable, default `python3`.
-- `PYTHON_SCRIPTS_DIR`: Directory for worker Python scripts, default `./scripts`.
+- `APP_SECRET_ACTIVE_KEY_ID`: active secret encryption key ID.
+- `APP_SECRET_KEYS_JSON`: JSON keyring used to decrypt stored secrets and encrypt with the active key.
 
 ### Health and queue endpoints
 
 ```bash
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
-curl -X POST http://localhost:8080/api/v1/jobs \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"python.script","payload":{"script":"hello.py","args":[]}}'
 ```

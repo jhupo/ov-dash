@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"go.uber.org/zap"
@@ -43,13 +44,18 @@ func (b *Bus) SubscribeAll(handler Handler) {
 	b.allHandlers = append(b.allHandlers, handler)
 }
 
-func (b *Bus) Publish(ctx context.Context, event Event) {
+func (b *Bus) Publish(ctx context.Context, event Event) error {
 	handlers := b.handlers(event.Type)
+	var publishErrors []error
 	for _, handler := range handlers {
-		if err := handler(ctx, event); err != nil && b.errorHandler != nil {
-			b.errorHandler(ctx, event, err)
+		if err := handler(ctx, event); err != nil {
+			publishErrors = append(publishErrors, err)
+			if b.errorHandler != nil {
+				b.errorHandler(ctx, event, err)
+			}
 		}
 	}
+	return errors.Join(publishErrors...)
 }
 
 func (b *Bus) handlers(eventType string) []Handler {

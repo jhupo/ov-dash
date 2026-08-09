@@ -1,20 +1,16 @@
+import { useEffect, useState } from 'react'
 import axios from 'axios'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   applyUpdate,
   checkUpdate,
+  getUpdateOperation,
   getUpdateStatus,
-  restartUpdate,
-  type UpdateRun,
-  type UpdateStatus,
+  type InstalledRelease,
+  type UpdateOperation,
+  type UpdateOperationState,
 } from '@/services/updates'
-import {
-  CheckCircle2,
-  CloudUpload,
-  RefreshCw,
-  RotateCw,
-  UploadCloud,
-} from 'lucide-react'
+import { CheckCircle2, CloudUpload, RefreshCw, UploadCloud } from 'lucide-react'
 import { toast } from 'sonner'
 import { useCan } from '@/hooks/use-can'
 import { Button } from '@/components/ui/button'
@@ -24,61 +20,97 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
+const operationProgress: Record<UpdateOperationState, number> = {
+  requested: 5,
+  downloaded: 15,
+  verified: 25,
+  preflight: 35,
+  quiescing: 45,
+  backup: 55,
+  migrating: 65,
+  switching: 75,
+  health_checking: 90,
+  committed: 100,
+  rolling_back: 75,
+  rolled_back: 100,
+  failed: 100,
+  rollback_failed: 100,
+  manual_intervention: 100,
+}
+
 export function UpdateSwitch() {
   const queryClient = useQueryClient()
   const can = useCan()
   const canApplyUpdate = can('updates:apply')
-  const status = useQuery({
+  const [operationId, setOperationId] = useState<string>()
+
+  const statusQuery = useQuery({
     queryKey: ['updates'],
     queryFn: getUpdateStatus,
-    refetchInterval: (query) => {
-      const update = query.state.data?.update
-      return update?.status === 'running' || update?.status === 'restarting'
-        ? 2_000
-        : false
-    },
+    refetchInterval: (query) =>
+      isActiveOperation(query.state.data?.operation) ? 2_000 : false,
   })
-  const value = status.data?.status
-  const update = status.data?.update
+  const statusOperation = statusQuery.data?.operation
+
+  useEffect(() => {
+    if (statusOperation?.id) setOperationId(statusOperation.id)
+  }, [statusOperation?.id])
+
+  const operationQuery = useQuery({
+    queryKey: ['updates', 'operations', operationId],
+    queryFn: () => getUpdateOperation(operationId!),
+    enabled: Boolean(operationId),
+    refetchInterval: (query) =>
+      isTerminalOperation(query.state.data) ? false : 2_000,
+  })
 
   const checkMutation = useMutation({
     mutationFn: checkUpdate,
-    onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['updates'] })
-      toast[result.hasUpdate ? 'success' : 'info'](result.message)
+    onSuccess: (result) => {
+      queryClient.setQueryData(['updates'], {
+        current: result.current,
+        operation: statusOperation ?? null,
+      })
+      if (result.has_update) {
+        toast.success(`发现新版本 ${result.candidate.version}`)
+      } else {
+        toast.info('当前已是最新版本')
+      }
     },
     onError: (error) => toast.error(errorMessage(error, '检查更新失败')),
   })
 
   const applyMutation = useMutation({
     mutationFn: applyUpdate,
-    onSuccess: async () => {
+    onSuccess: async (operation) => {
+      setOperationId(operation.id)
+      queryClient.setQueryData(
+        ['updates', 'operations', operation.id],
+        operation
+      )
       await queryClient.invalidateQueries({ queryKey: ['updates'] })
-      toast.success('开始准备更新')
+      toast.success('更新任务已启动')
     },
     onError: (error) => toast.error(errorMessage(error, '启动更新失败')),
   })
 
-  const restartMutation = useMutation({
-    mutationFn: restartUpdate,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['updates'] })
-      toast.success('服务正在重启')
-    },
-    onError: (error) => toast.error(errorMessage(error, '重启服务失败')),
-  })
-
-  const busy =
-    status.isFetching ||
-    checkMutation.isPending ||
-    applyMutation.isPending ||
-    restartMutation.isPending
-  const canApply = Boolean(
-    canApplyUpdate && value?.hasUpdate && !busy && !isActiveUpdate(update)
+  const current = statusQuery.data?.current ?? checkMutation.data?.current
+  const candidate = checkMutation.data?.candidate
+  const operation = operationQuery.data ?? statusOperation
+  const hasUpdate = Boolean(
+    checkMutation.data?.has_update &&
+    candidate &&
+    candidate.sequence > (current?.sequence ?? 0)
   )
-  const canRestart = canApplyUpdate && update?.status === 'ready' && !busy
-  const showUpdatePanel =
-    Boolean(value?.hasUpdate) || Boolean(update && update.status !== 'success')
+  const busy = checkMutation.isPending || applyMutation.isPending
+  const canApply = Boolean(
+    canApplyUpdate &&
+    candidate &&
+    hasUpdate &&
+    !busy &&
+    !isActiveOperation(operation)
+  )
+  const showUpdatePanel = hasUpdate || Boolean(operation)
 
   return (
     <DropdownMenu modal={false}>
@@ -90,7 +122,7 @@ export function UpdateSwitch() {
           aria-label='在线更新'
         >
           <CloudUpload className='size-[1.2rem]' />
-          {(value?.hasUpdate || isActiveUpdate(update) || canRestart) && (
+          {(hasUpdate || isActiveOperation(operation)) && (
             <span className='absolute top-1.5 right-1.5 size-2 rounded-full bg-primary ring-2 ring-background' />
           )}
           <span className='sr-only'>在线更新</span>
@@ -109,12 +141,14 @@ export function UpdateSwitch() {
                 size='icon'
                 variant='ghost'
                 className='size-8 shrink-0 rounded-md border bg-background hover:bg-accent'
-                disabled={busy}
+                disabled={busy || isActiveOperation(operation)}
                 onClick={() => checkMutation.mutate()}
-                aria-label='刷新版本'
+                aria-label='检查更新'
               >
                 <RefreshCw
-                  className={busy ? 'size-4 animate-spin' : 'size-4'}
+                  className={
+                    checkMutation.isPending ? 'size-4 animate-spin' : 'size-4'
+                  }
                 />
               </Button>
             </div>
@@ -122,14 +156,14 @@ export function UpdateSwitch() {
             <div className='mt-3 space-y-1'>
               <div className='text-xs text-muted-foreground'>当前版本</div>
               <div className='font-mono text-base leading-5 font-semibold break-all'>
-                {versionText(value)}
+                {versionText(current)}
               </div>
               <div className='flex items-center gap-1.5 text-xs text-muted-foreground'>
                 <span className='size-1.5 rounded-full bg-emerald-500' />
-                <span>{value?.checkedAt ? '已检查' : '未检查'}</span>
-                {value?.checkedAt && (
+                <span>{current?.committed_at ? '已安装' : '读取中'}</span>
+                {current?.committed_at && (
                   <span className='font-mono'>
-                    {formatDateTime(value.checkedAt)}
+                    {formatDateTime(current.committed_at)}
                   </span>
                 )}
               </div>
@@ -138,22 +172,22 @@ export function UpdateSwitch() {
 
           {showUpdatePanel && (
             <section className='space-y-3 rounded-lg border bg-card p-3 shadow-sm'>
-              {value?.hasUpdate && (
+              {hasUpdate && candidate && (
                 <div className='space-y-2'>
                   <div className='space-y-1'>
                     <div className='text-xs text-muted-foreground'>
                       更新版本
                     </div>
                     <div className='font-mono text-base leading-5 font-semibold break-all'>
-                      {value.latestVersion}
+                      {candidate.version}
                     </div>
                   </div>
-                  {!isActiveUpdate(update) && update?.status !== 'ready' && (
+                  {!isActiveOperation(operation) && (
                     <Button
                       type='button'
                       className='h-9 w-full'
                       disabled={!canApply}
-                      onClick={() => applyMutation.mutate()}
+                      onClick={() => applyMutation.mutate(candidate.release_id)}
                     >
                       <UploadCloud className='size-4' />
                       一键更新
@@ -162,19 +196,7 @@ export function UpdateSwitch() {
                 </div>
               )}
 
-              {update && <UpdateProgress update={update} />}
-
-              {canRestart && (
-                <Button
-                  type='button'
-                  className='h-9 w-full'
-                  disabled={!canApplyUpdate || restartMutation.isPending}
-                  onClick={() => restartMutation.mutate()}
-                >
-                  <RotateCw className='size-4' />
-                  重启服务
-                </Button>
-              )}
+              {operation && <UpdateProgress operation={operation} />}
             </section>
           )}
         </div>
@@ -183,16 +205,16 @@ export function UpdateSwitch() {
   )
 }
 
-function UpdateProgress({ update }: { update: UpdateRun }) {
-  const progress = Math.max(0, Math.min(100, update.progress || 0))
-  const isDone = update.status === 'ready' || update.status === 'success'
-  const isError = update.status === 'error'
+function UpdateProgress({ operation }: { operation: UpdateOperation }) {
+  const progress = operationProgress[operation.state]
+  const isDone = operation.state === 'committed'
+  const isError = isFailedOperation(operation)
 
   return (
     <div className='space-y-2'>
       <div className='flex items-center justify-between gap-3 text-sm'>
         <span className='min-w-0 truncate font-medium'>
-          {statusText(update)}
+          {statusText(operation.state)}
         </span>
         {isDone ? (
           <CheckCircle2 className='size-4 shrink-0 text-emerald-500' />
@@ -209,49 +231,74 @@ function UpdateProgress({ update }: { update: UpdateRun }) {
               ? 'h-full bg-destructive transition-all'
               : 'h-full bg-primary transition-all'
           }
-          style={{ width: `${isError ? 100 : progress}%` }}
+          style={{ width: `${progress}%` }}
         />
       </div>
-      {update.status === 'ready' && (
-        <div className='text-xs text-muted-foreground'>
-          更新已准备完成，重启服务后切换到新版本。
-        </div>
-      )}
-      {update.status === 'restarting' && (
-        <div className='text-xs text-muted-foreground'>服务正在重启...</div>
-      )}
+      <div className='flex items-center justify-between gap-2 font-mono text-xs text-muted-foreground'>
+        <span className='truncate'>{operation.release_id}</span>
+        <span className='shrink-0'>#{operation.revision}</span>
+      </div>
       {isError && (
         <div className='max-h-20 overflow-auto rounded-md bg-destructive/10 p-2 text-xs text-destructive'>
-          {update.message}
+          {operation.last_error || operation.recovery_reason || '更新未完成'}
         </div>
       )}
     </div>
   )
 }
 
-function isActiveUpdate(update?: UpdateRun | null) {
-  return update?.status === 'running' || update?.status === 'restarting'
+function isTerminalOperation(operation?: UpdateOperation | null) {
+  return operation
+    ? [
+        'committed',
+        'rolled_back',
+        'failed',
+        'rollback_failed',
+        'manual_intervention',
+      ].includes(operation.state)
+    : false
 }
 
-function statusText(update: UpdateRun) {
-  if (update.status === 'running') return update.message || '正在更新'
-  if (update.status === 'ready') return '更新准备完成'
-  if (update.status === 'restarting') return '正在重启服务'
-  if (update.status === 'success') return '更新完成'
-  if (update.status === 'error') return '更新失败'
-  return update.message
+function isActiveOperation(operation?: UpdateOperation | null) {
+  return Boolean(operation && !isTerminalOperation(operation))
 }
 
-function versionText(status?: UpdateStatus) {
-  if (!status) return '读取中'
-  if (status.currentVersion && status.currentVersion !== 'local') {
-    return status.currentVersion
+function isFailedOperation(operation: UpdateOperation) {
+  return [
+    'rolled_back',
+    'failed',
+    'rollback_failed',
+    'manual_intervention',
+  ].includes(operation.state)
+}
+
+function statusText(state: UpdateOperationState) {
+  const labels: Record<UpdateOperationState, string> = {
+    requested: '等待执行',
+    downloaded: '已下载发布包',
+    verified: '签名验证完成',
+    preflight: '正在预检',
+    quiescing: '正在进入维护模式',
+    backup: '正在备份',
+    migrating: '正在迁移数据库',
+    switching: '正在切换版本',
+    health_checking: '正在检查服务健康',
+    committed: '更新完成',
+    rolling_back: '正在回滚',
+    rolled_back: '已回滚到旧版本',
+    failed: '更新失败',
+    rollback_failed: '回滚失败',
+    manual_intervention: '需要人工处理',
   }
-  return status.currentCommit ? `local (${status.currentCommit})` : 'local'
+  return labels[state]
 }
 
-function formatDateTime(value?: string) {
-  if (!value) return '未检查'
+function versionText(release?: InstalledRelease) {
+  if (!release) return '读取中'
+  return release.version || release.release_id || 'local'
+}
+
+function formatDateTime(value: string) {
   return new Date(value).toLocaleString('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -264,10 +311,18 @@ function errorMessage(error: unknown, fallback: string) {
   if (axios.isAxiosError(error)) {
     const data = error.response?.data
     if (data && typeof data === 'object' && 'error' in data) {
+      if (
+        data.error &&
+        typeof data.error === 'object' &&
+        'message' in data.error &&
+        data.error.message
+      ) {
+        return String(data.error.message)
+      }
       if ('message' in data && data.message) {
         return String(data.message)
       }
-      return String(data.error)
+      return typeof data.error === 'string' ? data.error : fallback
     }
   }
   return fallback

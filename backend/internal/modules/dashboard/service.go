@@ -11,10 +11,10 @@ func NewService() *Service {
 func (s *Service) Snapshot(context.Context) (Snapshot, error) {
 	return Snapshot{
 		Overview: Overview{
-			TotalRevenue: Metric{ChangeText: "暂无数据"},
+			TotalRevenue:  Metric{ChangeText: "暂无数据"},
 			Subscriptions: Metric{ChangeText: "暂无数据"},
-			Sales: Metric{ChangeText: "暂无数据"},
-			ActiveNow: Metric{ChangeText: "暂无数据"},
+			Sales:         Metric{ChangeText: "暂无数据"},
+			ActiveNow:     Metric{ChangeText: "暂无数据"},
 			Monthly: []ChartPoint{
 				{Name: "1月"}, {Name: "2月"}, {Name: "3月"}, {Name: "4月"},
 				{Name: "5月"}, {Name: "6月"}, {Name: "7月"}, {Name: "8月"},
@@ -27,12 +27,12 @@ func (s *Service) Snapshot(context.Context) (Snapshot, error) {
 				{Name: "周一"}, {Name: "周二"}, {Name: "周三"}, {Name: "周四"},
 				{Name: "周五"}, {Name: "周六"}, {Name: "周日"},
 			},
-			TotalClicks: Metric{ChangeText: "暂无数据"},
+			TotalClicks:    Metric{ChangeText: "暂无数据"},
 			UniqueVisitors: Metric{ChangeText: "暂无数据"},
-			BounceRate: Metric{ChangeText: "暂无数据"},
-			AvgSession: Metric{ChangeText: "暂无数据"},
-			Referrers: []BarItem{},
-			Devices: []BarItem{},
+			BounceRate:     Metric{ChangeText: "暂无数据"},
+			AvgSession:     Metric{ChangeText: "暂无数据"},
+			Referrers:      []BarItem{},
+			Devices:        []BarItem{},
 		},
 	}, nil
 }

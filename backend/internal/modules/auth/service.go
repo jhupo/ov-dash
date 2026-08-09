@@ -7,6 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"net/mail"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,16 +19,34 @@ import (
 
 const sessionDuration = 7 * 24 * time.Hour
 
+var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$`)
+
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrInactiveUser       = errors.New("inactive user")
 	ErrInvalidSession     = errors.New("invalid session")
 	ErrPasswordTooShort   = errors.New("password must be at least 8 characters")
+	ErrAdminAlreadyExists = errors.New("an administrator already exists")
+	ErrBootstrapEmail     = errors.New("bootstrap admin email is invalid")
+	ErrBootstrapUsername  = errors.New("bootstrap admin username must be 3-64 letters, numbers, dots, underscores, or hyphens")
+	ErrBootstrapPassword  = errors.New("bootstrap admin password must be at least 12 characters")
 )
 
 type Service struct {
-	repository *Repository
+	repository serviceRepository
 	now        func() time.Time
+}
+
+type serviceRepository interface {
+	CreateInitialAdmin(context.Context, User, string) (User, error)
+	FindUserByEmail(context.Context, string) (userWithPassword, error)
+	FindUserByID(context.Context, string) (User, error)
+	CreateSession(context.Context, Session, string, string) error
+	FindSessionUser(context.Context, string, time.Time) (User, error)
+	ListCapabilitiesByRole(context.Context, string) ([]string, error)
+	RevokeSession(context.Context, string) error
+	UpdatePassword(context.Context, string, string) error
+	TouchLastLogin(context.Context, string) error
 }
 
 type LoginInput struct {
@@ -41,16 +62,35 @@ type LoginResult struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-func NewService(repository *Repository) *Service {
+func NewService(repository serviceRepository) *Service {
 	return &Service{repository: repository, now: time.Now}
 }
 
-func (s *Service) EnsureDefaultAdmin(ctx context.Context) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(DefaultAdminPassword), bcrypt.DefaultCost)
+func (s *Service) BootstrapAdmin(ctx context.Context, input BootstrapAdminInput) (User, error) {
+	input, err := normalizeBootstrapAdminInput(input)
 	if err != nil {
-		return err
+		return User{}, err
 	}
-	return s.repository.EnsureDefaultAdmin(ctx, string(hash))
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return User{}, fmt.Errorf("hash bootstrap admin password: %w", err)
+	}
+	token, err := randomToken()
+	if err != nil {
+		return User{}, fmt.Errorf("generate bootstrap admin id: %w", err)
+	}
+
+	user := User{
+		ID:        "user_" + token[:22],
+		FirstName: input.FirstName,
+		LastName:  input.LastName,
+		Username:  input.Username,
+		Email:     input.Email,
+		Status:    "active",
+		Role:      "admin",
+	}
+	return s.repository.CreateInitialAdmin(ctx, user, string(hash))
 }
 
 func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
@@ -92,8 +132,12 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		return LoginResult{}, err
 	}
 	user.User.LastLoginAt = ptrTime(s.now())
+	publicUser, err := s.ResolvePublicUser(ctx, user.User)
+	if err != nil {
+		return LoginResult{}, err
+	}
 
-	return LoginResult{User: user.User, Token: token, ExpiresAt: expiresAt}, nil
+	return LoginResult{User: publicUser, Token: token, ExpiresAt: expiresAt}, nil
 }
 
 func (s *Service) CurrentUser(ctx context.Context, token string) (User, error) {
@@ -106,6 +150,15 @@ func (s *Service) CurrentUser(ctx context.Context, token string) (User, error) {
 		return User{}, ErrInvalidSession
 	}
 	return user, err
+}
+
+func (s *Service) ResolvePublicUser(ctx context.Context, user User) (User, error) {
+	capabilities, err := s.repository.ListCapabilitiesByRole(ctx, user.Role)
+	if err != nil {
+		return User{}, fmt.Errorf("list capabilities for role %q: %w", normalizeRole(user.Role), err)
+	}
+	user.Capabilities = capabilities
+	return user, nil
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {
@@ -140,6 +193,28 @@ func (s *Service) ChangePassword(ctx context.Context, userID string, currentPass
 
 func SessionDuration() time.Duration {
 	return sessionDuration
+}
+
+func normalizeBootstrapAdminInput(input BootstrapAdminInput) (BootstrapAdminInput, error) {
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	input.Username = strings.TrimSpace(input.Username)
+	input.FirstName = strings.TrimSpace(input.FirstName)
+	input.LastName = strings.TrimSpace(input.LastName)
+
+	address, err := mail.ParseAddress(input.Email)
+	if err != nil || !strings.EqualFold(address.Address, input.Email) {
+		return BootstrapAdminInput{}, ErrBootstrapEmail
+	}
+	if !usernamePattern.MatchString(input.Username) {
+		return BootstrapAdminInput{}, ErrBootstrapUsername
+	}
+	if len(input.Password) < 12 {
+		return BootstrapAdminInput{}, ErrBootstrapPassword
+	}
+	if input.FirstName == "" {
+		input.FirstName = "Admin"
+	}
+	return input, nil
 }
 
 func hashToken(token string) string {

@@ -7,12 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
 	"ov-dash/backend/internal/events"
-	"ov-dash/backend/internal/modules/registry"
-	"ov-dash/backend/internal/modules/servers"
 	"ov-dash/backend/internal/platform"
 	platformmodule "ov-dash/backend/internal/platform/module"
 	"ov-dash/backend/internal/queue"
@@ -22,262 +19,205 @@ import (
 
 type RunnerDeps struct {
 	Runtime *platform.Runtime
+	Jobs    *platformmodule.JobRegistry
+}
+
+type lifecycleQueue interface {
+	MarkRunning(context.Context, string, queue.Job) error
+	MarkCompleted(context.Context, string, queue.Job) error
+	MarkFailed(context.Context, string, queue.Job, string, *time.Time) error
+	MarkDead(context.Context, string, queue.Job, string) error
+	MarkCanceled(context.Context, string, queue.Job, string) error
+	IsJobCancelRequested(context.Context, string) (bool, error)
+	AppendJobLog(context.Context, string, string, string, map[string]any) error
 }
 
 type Runner struct {
 	runtime    *platform.Runtime
+	lifecycle  lifecycleQueue
 	jobs       *platformmodule.JobRegistry
-	handlers   map[string]platformmodule.JobHandler
 	instanceID string
+	releaseID  string
+	runWorker  func(context.Context, queue.WorkerOptions, queue.Dispatcher) error
+	heartbeat  func(context.Context, string, string, string, string, int) error
 }
 
 func NewRunner(deps RunnerDeps) (*Runner, error) {
-	jobRegistry := platformmodule.NewJobRegistry()
-	if err := registry.NewDefault().RegisterJobs(platformmodule.Context{
-		Config:  deps.Runtime.Config,
-		DB:      deps.Runtime.DB,
-		Queue:   deps.Runtime.Queue,
-		Cache:   deps.Runtime.Cache,
-		Events:  deps.Runtime.Events,
-		Logger:  deps.Runtime.Logger,
-		Secrets: deps.Runtime.Secrets,
-		Audit:   deps.Runtime.Audit,
-	}, jobRegistry); err != nil {
-		return nil, fmt.Errorf("register worker jobs: %w", err)
+	if deps.Runtime == nil {
+		return nil, errors.New("worker runtime is required")
 	}
-
-	r := &Runner{
+	if deps.Runtime.Queue == nil {
+		return nil, errors.New("worker queue is required")
+	}
+	if deps.Jobs == nil {
+		return nil, errors.New("worker job registry is required")
+	}
+	releaseID := queue.NormalizeReleaseID(deps.Runtime.Config.App.Version)
+	if releaseID == "" {
+		return nil, errors.New("worker release ID is required")
+	}
+	return &Runner{
 		runtime:    deps.Runtime,
-		jobs:       jobRegistry,
-		handlers:   jobRegistry.Handlers(),
+		lifecycle:  deps.Runtime.Queue,
+		jobs:       deps.Jobs,
 		instanceID: newInstanceID(),
-	}
-	return r, nil
+		releaseID:  releaseID,
+		runWorker:  deps.Runtime.Queue.RunWorker,
+		heartbeat:  deps.Runtime.Queue.RecordWorkerHeartbeat,
+	}, nil
 }
 
 func (r *Runner) Run(ctx context.Context) error {
-	if r.runtime.Config.Worker.Concurrency < 1 {
-		return errors.New("worker concurrency must be greater than zero")
-	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	outboxDone := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		r.loopWorkerHeartbeat(ctx)
+		defer close(outboxDone)
+		r.loopOutbox(runCtx)
 	}()
 
-	wg.Add(1)
+	workerStarted := make(chan struct{})
+	heartbeatDone := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		r.loopServerCollectionScheduler(ctx)
-	}()
-
-	for i := 0; i < r.runtime.Config.Worker.Concurrency; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			r.loop(ctx, workerID)
-		}(i + 1)
-	}
-
-	<-ctx.Done()
-	r.runtime.Logger.Info("worker shutdown requested")
-	wg.Wait()
-	return nil
-}
-
-func (r *Runner) loop(ctx context.Context, workerID int) {
-	logger := r.runtime.Logger.With(zap.Int("worker_id", workerID))
-	for {
+		defer close(heartbeatDone)
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return
-		default:
+		case <-workerStarted:
+			r.loopWorkerHeartbeat(runCtx)
 		}
+	}()
 
-		job, err := r.runtime.Queue.Dequeue(ctx, r.runtime.Config.Worker.QueueName, r.runtime.Config.Worker.PollInterval)
-		if err != nil {
-			logger.Error("dequeue job", zap.Error(err))
-			time.Sleep(r.runtime.Config.Worker.PollInterval)
-			continue
-		}
-		if job == nil {
-			continue
-		}
-		job.Attempts++
+	err := r.runWorker(runCtx, queue.WorkerOptions{
+		QueueName:       r.runtime.Config.Worker.QueueName,
+		Concurrency:     r.runtime.Config.Worker.Concurrency,
+		JobTimeout:      r.runtime.Config.Worker.JobTimeout,
+		RescueAfter:     r.runtime.Config.Worker.RescueAfter,
+		ShutdownTimeout: r.runtime.Config.App.ShutdownTimeout,
+		InstanceID:      r.instanceID,
+		Started: func() {
+			close(workerStarted)
+		},
+	}, r)
+	cancel()
+	<-heartbeatDone
+	<-outboxDone
+	return err
+}
 
-		if r.cancelRequested(ctx, *job, logger) {
-			logger.Info("job canceled before start", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
-			if err := r.runtime.Queue.MarkCanceled(ctx, r.runtime.Config.Worker.QueueName, *job, "cancel requested before start"); err != nil {
-				logger.Error("mark job canceled", zap.String("job_id", job.ID), zap.Error(err))
-			}
-			r.appendJobLog(ctx, *job, "system", "job canceled before start", map[string]any{"worker_id": workerID})
-			r.publishJobEvent(ctx, "job.canceled", *job, map[string]any{"worker_id": workerID})
-			continue
-		}
-
-		handler, ok := r.handlers[job.Type]
-		if !ok {
-			logger.Warn("unknown job type", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
-			if err := r.runtime.Queue.MarkDead(ctx, r.runtime.Config.Worker.QueueName, *job, "unknown job type"); err != nil {
-				logger.Error("mark unknown job dead", zap.String("job_id", job.ID), zap.Error(err))
-			}
-			r.appendJobLog(ctx, *job, "system", "unknown job type", map[string]any{"worker_id": workerID})
-			r.publishJobEvent(ctx, "job.unknown", *job, map[string]any{"worker_id": workerID})
-			continue
-		}
-
-		if err := r.runtime.Queue.MarkRunning(ctx, r.runtime.Config.Worker.QueueName, *job); err != nil {
-			logger.Error("mark job running", zap.String("job_id", job.ID), zap.Error(err))
-		}
-		r.appendJobLog(ctx, *job, "system", "job started", map[string]any{"worker_id": workerID})
-		r.publishJobEvent(ctx, "job.started", *job, map[string]any{"worker_id": workerID})
-
-		jobCtx, cancel := r.jobContext(ctx, *job)
-		err = handler.Handle(jobCtx, *job)
-		cancel()
-
-		if err != nil {
-			if r.cancelRequested(ctx, *job, logger) {
-				logger.Info("job canceled while running", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
-				if markErr := r.runtime.Queue.MarkCanceled(ctx, r.runtime.Config.Worker.QueueName, *job, "cancel requested while running"); markErr != nil {
-					logger.Error("mark job canceled", zap.String("job_id", job.ID), zap.Error(markErr))
-				}
-				r.appendJobLog(ctx, *job, "system", "job canceled while running", map[string]any{"worker_id": workerID})
-				r.publishJobEvent(ctx, "job.canceled", *job, map[string]any{"worker_id": workerID})
-				continue
-			}
-			if job.Attempts < job.MaxAttempts {
-				retryAt := time.Now().UTC().Add(retryBackoff(job.Attempts))
-				logger.Warn(
-					"job failed, scheduling retry",
-					zap.String("job_id", job.ID),
-					zap.String("job_type", job.Type),
-					zap.Int("attempts", job.Attempts),
-					zap.Int("max_attempts", job.MaxAttempts),
-					zap.Time("retry_at", retryAt),
-					zap.Error(err),
-				)
-				if retryErr := r.runtime.Queue.ScheduleRetry(ctx, r.runtime.Config.Worker.QueueName, *job, retryAt, err.Error()); retryErr != nil {
-					logger.Error("schedule job retry", zap.String("job_id", job.ID), zap.Error(retryErr))
-					if markErr := r.runtime.Queue.MarkDead(ctx, r.runtime.Config.Worker.QueueName, *job, retryErr.Error()); markErr != nil {
-						logger.Error("mark retry scheduling failure dead", zap.String("job_id", job.ID), zap.Error(markErr))
-					}
-				}
-				r.appendJobLog(ctx, *job, "stderr", err.Error(), map[string]any{
-					"worker_id": workerID,
-					"retry_at":  retryAt,
-				})
-				r.publishJobEvent(ctx, "job.failed", *job, map[string]any{
-					"worker_id": workerID,
-					"error":     err.Error(),
-					"retry_at":  retryAt,
-				})
-				continue
-			}
-
-			logger.Error(
-				"job failed permanently",
-				zap.String("job_id", job.ID),
-				zap.String("job_type", job.Type),
-				zap.Int("attempts", job.Attempts),
-				zap.Int("max_attempts", job.MaxAttempts),
-				zap.Error(err),
-			)
-			if markErr := r.runtime.Queue.MarkDead(ctx, r.runtime.Config.Worker.QueueName, *job, err.Error()); markErr != nil {
-				logger.Error("mark job dead", zap.String("job_id", job.ID), zap.Error(markErr))
-			}
-			r.appendJobLog(ctx, *job, "stderr", err.Error(), map[string]any{"worker_id": workerID})
-			r.publishJobEvent(ctx, "job.failed", *job, map[string]any{
-				"worker_id": workerID,
-				"error":     err.Error(),
-			})
-			r.publishJobEvent(ctx, "job.dead", *job, map[string]any{
-				"worker_id": workerID,
-				"error":     err.Error(),
-			})
-			continue
-		}
-
-		if r.cancelRequested(ctx, *job, logger) {
-			logger.Info("job canceled after handler finished", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
-			if err := r.runtime.Queue.MarkCanceled(ctx, r.runtime.Config.Worker.QueueName, *job, "cancel requested"); err != nil {
-				logger.Error("mark job canceled", zap.String("job_id", job.ID), zap.Error(err))
-			}
-			r.appendJobLog(ctx, *job, "system", "job canceled", map[string]any{"worker_id": workerID})
-			r.publishJobEvent(ctx, "job.canceled", *job, map[string]any{"worker_id": workerID})
-			continue
-		}
-
-		if err := r.runtime.Queue.MarkCompleted(ctx, r.runtime.Config.Worker.QueueName, *job); err != nil {
-			logger.Error("mark job completed", zap.String("job_id", job.ID), zap.Error(err))
-		}
-		logger.Info("job completed", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
-		r.appendJobLog(ctx, *job, "system", "job completed", map[string]any{"worker_id": workerID})
-		r.publishJobEvent(ctx, "job.completed", *job, map[string]any{"worker_id": workerID})
+func (r *Runner) loopOutbox(ctx context.Context) {
+	if r.runtime.Outbox == nil || r.runtime.Events == nil {
+		return
 	}
-}
-
-func (r *Runner) publishJobEvent(ctx context.Context, eventType string, job queue.Job, payload map[string]any) {
-	payload["job_id"] = job.ID
-	payload["job_type"] = job.Type
-	r.runtime.Events.Publish(ctx, events.New(eventType, "worker.runner", payload))
-}
-
-func (r *Runner) appendJobLog(ctx context.Context, job queue.Job, stream string, message string, metadata map[string]any) {
-	if err := r.runtime.Queue.AppendJobLog(ctx, job.ID, stream, message, metadata); err != nil {
-		r.runtime.Logger.Error("append job log", zap.String("job_id", job.ID), zap.Error(err))
+	dispatcher, err := events.NewDispatcher(r.runtime.Outbox, r.runtime.Events, r.instanceID)
+	if err != nil {
+		r.runtime.Logger.Error("create outbox dispatcher", zap.Error(err))
+		return
 	}
-}
-
-func (r *Runner) jobContext(ctx context.Context, job queue.Job) (context.Context, context.CancelFunc) {
-	var jobCtx context.Context
-	var cancel context.CancelFunc
-	if job.Type == "server.collect" {
-		jobCtx, cancel = context.WithCancel(ctx)
-	} else {
-		jobCtx, cancel = context.WithTimeout(ctx, r.runtime.Config.Worker.JobTimeout)
-	}
-
-	go r.cancelJobContextOnRequest(jobCtx, cancel, job)
-	return jobCtx, cancel
-}
-
-func (r *Runner) cancelJobContextOnRequest(ctx context.Context, cancel context.CancelFunc, job queue.Job) {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
+		if _, err := dispatcher.DispatchBatch(ctx); err != nil && ctx.Err() == nil {
+			r.runtime.Logger.Error("dispatch outbox", zap.Error(err))
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			requested, err := r.runtime.Queue.IsJobCancelRequested(ctx, job.ID)
-			if err != nil {
-				r.runtime.Logger.Error("check running job cancel request", zap.String("job_id", job.ID), zap.Error(err))
-				continue
-			}
-			if requested {
-				cancel()
-				return
-			}
 		}
 	}
 }
 
-func (r *Runner) cancelRequested(ctx context.Context, job queue.Job, logger *zap.Logger) bool {
-	requested, err := r.runtime.Queue.IsJobCancelRequested(ctx, job.ID)
-	if err != nil {
-		logger.Error("check job cancel request", zap.String("job_id", job.ID), zap.Error(err))
-		return false
+func (r *Runner) Dispatch(ctx context.Context, job queue.Job) error {
+	definition, ok := r.jobs.Definition(job.Type)
+	if !ok {
+		err := fmt.Errorf("job type is not registered: %s", job.Type)
+		return errors.Join(err, r.recordFailure(ctx, job, err))
 	}
-	return requested
+
+	if err := r.lifecycle.MarkRunning(ctx, r.runtime.Config.Worker.QueueName, job); err != nil {
+		return fmt.Errorf("mark job running: %w", err)
+	}
+	r.appendJobLog(ctx, job, "system", "job started", nil)
+
+	err := definition.Handler.Handle(ctx, job)
+	if err != nil {
+		cancelRequested, cancelErr := r.lifecycle.IsJobCancelRequested(context.WithoutCancel(ctx), job.ID)
+		if cancelErr != nil {
+			r.runtime.Logger.Error("check job cancel request", zap.String("job_id", job.ID), zap.Error(cancelErr))
+		}
+		if cancelRequested {
+			message := "job canceled"
+			if markErr := r.lifecycle.MarkCanceled(context.WithoutCancel(ctx), r.runtime.Config.Worker.QueueName, job, message); markErr != nil {
+				return errors.Join(err, fmt.Errorf("mark job canceled: %w", markErr))
+			}
+			r.appendJobLog(context.WithoutCancel(ctx), job, "system", message, nil)
+			return err
+		}
+		return errors.Join(err, r.recordFailure(context.WithoutCancel(ctx), job, err))
+	}
+
+	cancelRequested, err := r.lifecycle.IsJobCancelRequested(context.WithoutCancel(ctx), job.ID)
+	if err != nil {
+		return fmt.Errorf("check job cancel request: %w", err)
+	}
+	if cancelRequested {
+		message := "job canceled"
+		if err := r.lifecycle.MarkCanceled(context.WithoutCancel(ctx), r.runtime.Config.Worker.QueueName, job, message); err != nil {
+			return fmt.Errorf("mark job canceled: %w", err)
+		}
+		r.appendJobLog(context.WithoutCancel(ctx), job, "system", message, nil)
+		return nil
+	}
+
+	completionCtx := context.WithoutCancel(ctx)
+	if err := r.lifecycle.MarkCompleted(completionCtx, r.runtime.Config.Worker.QueueName, job); err != nil {
+		return fmt.Errorf("mark job completed: %w", err)
+	}
+	r.appendJobLog(completionCtx, job, "system", "job completed", nil)
+	r.runtime.Logger.Info("job completed", zap.String("job_id", job.ID), zap.String("job_type", job.Type))
+	return nil
+}
+
+func (r *Runner) Timeout(job queue.Job) time.Duration {
+	if definition, ok := r.jobs.Definition(job.Type); ok && definition.Timeout != 0 {
+		return definition.Timeout
+	}
+	return r.runtime.Config.Worker.JobTimeout
+}
+
+func (r *Runner) recordFailure(ctx context.Context, job queue.Job, jobErr error) error {
+	metadata := map[string]any{
+		"attempts":     job.Attempts,
+		"max_attempts": job.MaxAttempts,
+	}
+	if job.Attempts < job.MaxAttempts {
+		retryAt := time.Now().UTC().Add(queue.RetryBackoff(job.Attempts))
+		if err := r.lifecycle.MarkFailed(ctx, r.runtime.Config.Worker.QueueName, job, jobErr.Error(), &retryAt); err != nil {
+			return fmt.Errorf("mark job retrying: %w", err)
+		}
+		metadata["retry_at"] = retryAt
+		r.appendJobLog(ctx, job, "stderr", jobErr.Error(), metadata)
+		return nil
+	}
+
+	if err := r.lifecycle.MarkDead(ctx, r.runtime.Config.Worker.QueueName, job, jobErr.Error()); err != nil {
+		return fmt.Errorf("mark job dead: %w", err)
+	}
+	r.appendJobLog(ctx, job, "stderr", jobErr.Error(), metadata)
+	return nil
+}
+
+func (r *Runner) appendJobLog(ctx context.Context, job queue.Job, stream string, message string, metadata map[string]any) {
+	if err := r.lifecycle.AppendJobLog(ctx, job.ID, stream, message, metadata); err != nil {
+		r.runtime.Logger.Error("append job log", zap.String("job_id", job.ID), zap.Error(err))
+	}
 }
 
 func (r *Runner) loopWorkerHeartbeat(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-
 	r.recordWorkerHeartbeat(ctx)
 	for {
 		select {
@@ -291,10 +231,11 @@ func (r *Runner) loopWorkerHeartbeat(ctx context.Context) {
 
 func (r *Runner) recordWorkerHeartbeat(ctx context.Context) {
 	hostname, _ := os.Hostname()
-	if err := r.runtime.Queue.RecordWorkerHeartbeat(
+	if err := r.heartbeat(
 		ctx,
 		r.instanceID,
 		r.runtime.Config.Worker.QueueName,
+		r.releaseID,
 		hostname,
 		os.Getpid(),
 	); err != nil {
@@ -308,95 +249,4 @@ func newInstanceID() string {
 		return fmt.Sprintf("worker-%d", time.Now().UnixNano())
 	}
 	return "worker-" + hex.EncodeToString(b[:])
-}
-
-func retryBackoff(attempt int) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-
-	delay := 5 * time.Second
-	for i := 1; i < attempt; i++ {
-		delay *= 2
-		if delay >= time.Minute {
-			return time.Minute
-		}
-	}
-	return delay
-}
-
-func (r *Runner) newRegisteredJob(jobType string, payload map[string]any) (queue.Job, error) {
-	job, err := queue.NewJob(jobType, payload)
-	if err != nil {
-		return queue.Job{}, err
-	}
-	if r != nil && r.jobs != nil {
-		if def, ok := r.jobs.Definition(jobType); ok && def.MaxAttempts > 0 {
-			job.MaxAttempts = def.MaxAttempts
-		}
-	}
-	job.Normalize()
-	return job, nil
-}
-
-func (r *Runner) newServerCollectJob(serverID string) (queue.Job, error) {
-	job, err := r.newRegisteredJob("server.collect", map[string]any{"server_id": serverID})
-	if err != nil {
-		return queue.Job{}, err
-	}
-	job.IdempotencyKey = serverCollectIdempotencyKey(serverID)
-	job.Normalize()
-	return job, nil
-}
-
-func serverCollectIdempotencyKey(serverID string) string {
-	return "server.collect:" + serverID
-}
-
-func (r *Runner) loopServerCollectionScheduler(ctx context.Context) {
-	repository := servers.NewRepository(r.runtime.DB)
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	r.runtime.Logger.Info("server collector scheduler started")
-	r.scheduleServerCollections(ctx, repository)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			r.scheduleServerCollections(ctx, repository)
-		}
-	}
-}
-
-func (r *Runner) scheduleServerCollections(ctx context.Context, repository *servers.Repository) {
-	items, err := repository.DueForCollection(ctx, 50)
-	if err != nil {
-		r.runtime.Logger.Error("list due server collections", zap.Error(err))
-		return
-	}
-	for _, item := range items {
-		job, err := r.newServerCollectJob(item.ID)
-		if err != nil {
-			r.runtime.Logger.Error("create server collect job", zap.String("server_id", item.ID), zap.Error(err))
-			continue
-		}
-		if err := r.runtime.Queue.Enqueue(ctx, r.runtime.Config.Worker.QueueName, job); err != nil {
-			if errors.Is(err, queue.ErrDuplicateIdempotencyKey) {
-				r.runtime.Logger.Info("server collect job already queued", zap.String("server_id", item.ID), zap.String("idempotency_key", job.IdempotencyKey))
-				continue
-			}
-			r.runtime.Logger.Error("enqueue server collect job", zap.String("server_id", item.ID), zap.Error(err))
-			continue
-		}
-		if err := repository.MarkCollectQueued(ctx, item.ID); err != nil {
-			r.runtime.Logger.Error("mark server collect queued", zap.String("server_id", item.ID), zap.Error(err))
-		}
-		r.runtime.Events.Publish(ctx, events.New("server.collect.enqueued", "worker.scheduler", map[string]any{
-			"job_id":    job.ID,
-			"server_id": item.ID,
-		}))
-	}
 }

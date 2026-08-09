@@ -1,54 +1,98 @@
 import { httpClient } from '@/lib/http-client'
 
-export type UpdateStatus = {
-  currentVersion: string
-  currentCommit: string
-  latestVersion: string
-  hasUpdate: boolean
-  checkedAt: string
-  message: string
-  enabled: boolean
-  updating: boolean
-}
-
-export type UpdateRun = {
-  startedAt: string
-  endedAt?: string
+export type InstalledRelease = {
+  release_id: string
   version: string
-  status: 'running' | 'ready' | 'restarting' | 'success' | 'error'
-  message: string
-  progress: number
+  sequence: number
+  schema: number
+  images: Record<string, string>
+  release_env?: string
+  committed_at: string
 }
 
-type StatusResponse = {
-  status: UpdateStatus
-  update: UpdateRun | null
+export type ReleaseCandidate = {
+  schema_version: number
+  release_id: string
+  version: string
+  sequence: number
+  published_at: string
+  expires_at: string
+  minimum_version: string
+  images: Record<string, string>
+  database: {
+    from_schema: number
+    to_schema: number
+    strategy: string
+    transactional: boolean
+    backup_required: boolean
+  }
+  health: {
+    timeout_seconds: number
+    stability_seconds: number
+  }
 }
 
-type CheckResponse = {
-  status: UpdateStatus
+export type UpdateOperationState =
+  | 'requested'
+  | 'downloaded'
+  | 'verified'
+  | 'preflight'
+  | 'quiescing'
+  | 'backup'
+  | 'migrating'
+  | 'switching'
+  | 'health_checking'
+  | 'committed'
+  | 'rolling_back'
+  | 'rolled_back'
+  | 'failed'
+  | 'rollback_failed'
+  | 'manual_intervention'
+
+export type UpdateOperation = {
+  id: string
+  release_id: string
+  state: UpdateOperationState
+  revision: number
+  created_at: string
+  updated_at: string
+  last_error?: string
+  recovery_reason?: string
 }
 
-type ApplyResponse = {
-  update: UpdateRun
+export type UpdateStatusResponse = {
+  current: InstalledRelease
+  operation: UpdateOperation | null
 }
 
-export async function getUpdateStatus(): Promise<StatusResponse> {
-  const response = await httpClient.get<StatusResponse>('/updates')
+export type UpdateCheckResponse = {
+  current: InstalledRelease
+  candidate: ReleaseCandidate
+  has_update: boolean
+}
+
+export async function getUpdateStatus(): Promise<UpdateStatusResponse> {
+  const response = await httpClient.get<UpdateStatusResponse>('/updates')
   return response.data
 }
 
-export async function checkUpdate(): Promise<UpdateStatus> {
-  const response = await httpClient.post<CheckResponse>('/updates/check')
-  return response.data.status
+export async function checkUpdate(): Promise<UpdateCheckResponse> {
+  const response = await httpClient.post<UpdateCheckResponse>('/updates/check')
+  return response.data
 }
 
-export async function applyUpdate(): Promise<UpdateRun> {
-  const response = await httpClient.post<ApplyResponse>('/updates/apply')
-  return response.data.update
+export async function applyUpdate(releaseId: string): Promise<UpdateOperation> {
+  const response = await httpClient.post<UpdateOperation>('/updates/apply', {
+    release_id: releaseId,
+  })
+  return response.data
 }
 
-export async function restartUpdate(): Promise<UpdateRun> {
-  const response = await httpClient.post<ApplyResponse>('/updates/restart')
-  return response.data.update
+export async function getUpdateOperation(
+  operationId: string
+): Promise<UpdateOperation> {
+  const response = await httpClient.get<UpdateOperation>(
+    `/updates/operations/${operationId}`
+  )
+  return response.data
 }

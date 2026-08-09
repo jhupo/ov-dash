@@ -18,7 +18,8 @@ const sessionCookieName = "ovdash_session"
 type Module struct{}
 
 type Handler struct {
-	service *Service
+	service             *Service
+	sessionCookieSecure bool
 }
 
 type loginRequest struct {
@@ -37,17 +38,28 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "auth"
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "auth",
+		Title:       "Auth",
+		Description: "Session authentication and current user endpoints.",
+		Kind:        "platform",
+		Tags:        []string{"platform", "auth", "sessions"},
+	}
 }
 
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
+func (Module) Register(reg *platformmodule.Registrar) error {
+	return reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{
+			service:             NewService(NewRepository(ctx.DB)),
+			sessionCookieSecure: ctx.Config.HTTP.SessionCookieSecure,
+		}
 
-	ctx.PublicRouter.Post("/auth/login", handler.Login)
-	ctx.ProtectedRouter.Post("/auth/logout", handler.Logout)
-	ctx.ProtectedRouter.Get("/auth/me", handler.Me)
-	ctx.ProtectedRouter.Put("/auth/password", handler.ChangePassword)
+		ctx.PublicRouter.Post("/auth/login", handler.Login)
+		ctx.ProtectedRouter.Post("/auth/logout", handler.Logout)
+		ctx.ProtectedRouter.Get("/auth/me", handler.Me)
+		ctx.ProtectedRouter.Put("/auth/password", handler.ChangePassword)
+	})
 }
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -72,13 +84,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, status, map[string]string{"error": code})
 		return
 	}
-	setSessionCookie(w, r, result.Token, result.ExpiresAt)
+	setSessionCookie(w, result.Token, result.ExpiresAt, h.sessionCookieSecure)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": result.User, "expiresAt": result.ExpiresAt})
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	_ = h.service.Logout(r.Context(), TokenFromRequest(r))
-	clearSessionCookie(w, r)
+	clearSessionCookie(w, h.sessionCookieSecure)
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -88,7 +100,12 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": user})
+	publicUser, err := h.service.ResolvePublicUser(r.Context(), user)
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "current_user_failed"})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": publicUser})
 }
 
 func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -128,13 +145,13 @@ func UserFromContext(ctx context.Context) (User, bool) {
 	return user, ok
 }
 
-func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
+func setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, secure bool) {
 	cookie := &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(SessionDuration().Seconds()),
 		Expires:  expiresAt,
@@ -142,13 +159,13 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expi
 	http.SetCookie(w, cookie)
 }
 
-func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -166,12 +183,9 @@ func TokenFromRequest(r *http.Request) string {
 }
 
 func clientIP(r *http.Request) string {
-	if forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
-		return strings.TrimSpace(strings.Split(forwardedFor, ",")[0])
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
-		return r.RemoteAddr
+		return strings.TrimSpace(r.RemoteAddr)
 	}
 	return host
 }

@@ -27,27 +27,34 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "platform"
-}
-
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{
-		cache: ctx.Cache,
-		db:    ctx.DB,
-		proxy: proxy.NewService(proxy.NewRepositoryWithSecrets(ctx.DB, ctx.Secrets)),
-		audit: ctx.Audit,
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "platform",
+		Title:       "Platform",
+		Description: "Runtime status, audit log access, settings permissions, and platform metadata.",
+		Kind:        "platform",
+		Tags:        []string{"platform", "runtime", "audit"},
 	}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.PlatformRead)).Get("/platform", handler.Status)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.PlatformRead)).Get("/audit-logs", handler.AuditLogs)
 }
 
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{
+			cache: ctx.Cache,
+			db:    ctx.DB,
+			proxy: proxy.NewService(proxy.NewRepository(ctx.DB, ctx.Secrets)),
+			audit: ctx.Audit,
+		}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.PlatformRead)).Get("/platform", handler.Status)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.PlatformRead)).Get("/audit-logs", handler.AuditLogs)
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(
 		capability.PlatformRead,
 		capability.SettingsRead,
 		capability.SettingsWrite,
-	}
+	)
 }
 
 func (h *Handler) AuditLogs(w http.ResponseWriter, r *http.Request) {

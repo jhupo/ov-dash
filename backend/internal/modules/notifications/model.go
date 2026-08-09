@@ -5,13 +5,15 @@ import "time"
 const DefaultTelegramSettingsID = "default"
 
 type TelegramSettings struct {
-	ID           string    `json:"id"`
-	Enabled      bool      `json:"enabled"`
-	BotToken     string    `json:"-"`
-	InboundToken string    `json:"-"`
-	GroupEnabled bool      `json:"group_enabled"`
-	GroupChatID  string    `json:"group_chat_id"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                   string    `json:"id"`
+	Enabled              bool      `json:"enabled"`
+	BotToken             string    `json:"-"`
+	BotTokenSecretID     string    `json:"-"`
+	InboundToken         string    `json:"-"`
+	InboundTokenSecretID string    `json:"-"`
+	GroupEnabled         bool      `json:"group_enabled"`
+	GroupChatID          string    `json:"group_chat_id"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type PublicTelegramSettings struct {

@@ -175,27 +175,6 @@ func FilterFromQuery(r *http.Request) ListFilter {
 	return normalizeListFilter(filter)
 }
 
-func (r *Recorder) ListLegacy(ctx context.Context, limit int) ([]Log, error) {
-	if r == nil {
-		return []Log{}, nil
-	}
-	if limit < 1 || limit > 200 {
-		limit = 50
-	}
-	rows, err := r.db.Query(ctx, `
-		SELECT id, actor_id, actor_email, actor_role, action, resource, resource_id,
-		       result, message, metadata, ip_address, user_agent, created_at
-		FROM audit_logs
-		ORDER BY created_at DESC
-		LIMIT $1
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanLogs(rows)
-}
-
 func LimitFromQuery(r *http.Request) int {
 	limit := 50
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
@@ -207,12 +186,9 @@ func LimitFromQuery(r *http.Request) int {
 }
 
 func RequestIP(r *http.Request) string {
-	if forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
-		return strings.TrimSpace(strings.Split(forwardedFor, ",")[0])
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
-		return r.RemoteAddr
+		return strings.TrimSpace(r.RemoteAddr)
 	}
 	return host
 }

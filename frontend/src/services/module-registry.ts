@@ -27,7 +27,6 @@ export type FrontendModuleId =
   | 'apps'
   | 'users'
   | 'wiki'
-  | 'server-status'
   | 'settings'
   | 'settings-proxy'
   | 'settings-servers'
@@ -128,15 +127,6 @@ export const frontendModuleManifests: FrontendModuleManifest[] = [
     icon: BookOpen,
     permissions: ['wiki:read'],
     sidebar: { groupId: 'general', order: 50 },
-    command: { enabled: true },
-  },
-  {
-    id: 'server-status',
-    title: '服务器状态',
-    path: '/server-status',
-    icon: Server,
-    permissions: ['servers:read'],
-    sidebar: { groupId: 'pages', order: 10 },
     command: { enabled: true },
   },
   {

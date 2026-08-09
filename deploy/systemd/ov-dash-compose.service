@@ -1,15 +1,16 @@
 [Unit]
 Description=ov-dash Docker Compose stack
-Requires=docker.service
-After=docker.service network-online.target
+Requires=docker.service ov-dash-updater.service
+After=docker.service network-online.target ov-dash-updater.service
 Wants=network-online.target
+PartOf=docker.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/ov-dash
 RemainAfterExit=yes
-ExecStart=/usr/bin/docker compose --env-file .env up -d
-ExecStop=/usr/bin/docker compose --env-file .env down
+ExecStart=/usr/bin/flock --shared /var/lib/ov-dash/updater/active.lock /bin/sh -ec '/usr/local/libexec/ov-dash-updater --state-dir=/var/lib/ov-dash/updater --assert-start-safe && if [ -f /var/lib/ov-dash/updater/current.env ]; then exec /usr/bin/docker compose --env-file /opt/ov-dash/.env --env-file /var/lib/ov-dash/updater/current.env up -d; else exec /usr/bin/docker compose --env-file /opt/ov-dash/.env up -d; fi'
+ExecStop=/bin/sh -ec 'if [ -f /var/lib/ov-dash/updater/current.env ]; then exec /usr/bin/docker compose --env-file /opt/ov-dash/.env --env-file /var/lib/ov-dash/updater/current.env stop --timeout 45; else exec /usr/bin/docker compose --env-file /opt/ov-dash/.env stop --timeout 45; fi'
 TimeoutStartSec=0
 
 [Install]

@@ -21,7 +21,7 @@ func TestNormalizeSaveInputDefaultsAndTrims(t *testing.T) {
 	if !strings.HasPrefix(input.ID, "srv_") {
 		t.Fatalf("generated id = %q", input.ID)
 	}
-	if input.Port != 22 || input.AuthType != "password" || input.CollectInterval != 60 {
+	if input.Port != 22 || input.AuthType != "password" {
 		t.Fatalf("defaults were not applied: %+v", input)
 	}
 }
@@ -51,18 +51,14 @@ func TestNormalizeSaveInputValidatesRequiredFields(t *testing.T) {
 
 func TestPublicConnectionDoesNotExposeCredentialValues(t *testing.T) {
 	public := Connection{
-		ID:                  "srv_1",
-		Name:                "edge",
-		Password:            "secret",
-		PrivateKey:          "private",
-		PasswordSecretID:    "sec_password",
-		CollectFailureCount: 3,
+		ID:               "srv_1",
+		Name:             "edge",
+		Password:         "secret",
+		PrivateKey:       "private",
+		PasswordSecretID: "sec_password",
 	}.Public()
 
 	if !public.HasPassword || !public.HasPrivateKey {
 		t.Fatalf("credential availability flags not set: %+v", public)
-	}
-	if public.CollectFailureCount != 3 {
-		t.Fatalf("failure count = %d, want 3", public.CollectFailureCount)
 	}
 }

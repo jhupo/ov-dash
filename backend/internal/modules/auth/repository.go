@@ -2,37 +2,64 @@ package auth
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"ov-dash/backend/internal/db"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
+type repositoryDB interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 type Repository struct {
-	db *db.Pool
+	db repositoryDB
 }
 
 func NewRepository(db *db.Pool) *Repository {
 	return &Repository{db: db}
 }
 
-func (r *Repository) EnsureDefaultAdmin(ctx context.Context, passwordHash string) error {
-	_, err := r.db.Exec(ctx, `
+func (r *Repository) CreateInitialAdmin(ctx context.Context, user User, passwordHash string) (User, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(6363710373251581815)`); err != nil {
+		return User{}, err
+	}
+
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE role = 'admin')`).Scan(&exists); err != nil {
+		return User{}, err
+	}
+	if exists {
+		return User{}, ErrAdminAlreadyExists
+	}
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO users (
 			id, first_name, last_name, username, email, phone_number, status, role, password_hash
 		)
-		VALUES (
-			'user_default_admin', 'Classic', 'River', 'classicriver', $1, '', 'active', 'admin', $2
-		)
-		ON CONFLICT (email) DO UPDATE SET
-			password_hash = CASE
-				WHEN users.password_hash = '' THEN EXCLUDED.password_hash
-				ELSE users.password_hash
-			END,
-			status = 'active',
-			role = 'admin',
-			updated_at = now()
-	`, DefaultAdminEmail, passwordHash)
-	return err
+		VALUES ($1, $2, $3, $4, $5, '', 'active', 'admin', $6)
+		RETURNING id, first_name, last_name, username, email, phone_number, status, role,
+		          last_login_at, created_at, updated_at
+	`, user.ID, user.FirstName, user.LastName, user.Username, user.Email, passwordHash)
+	created, err := scanUser(row)
+	if err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, err
+	}
+	return created, nil
 }
 
 func (r *Repository) FindUserByEmail(ctx context.Context, email string) (userWithPassword, error) {
@@ -75,6 +102,16 @@ func (r *Repository) FindSessionUser(ctx context.Context, tokenHash string, now 
 		  AND u.status = 'active'
 	`, tokenHash, now)
 	return scanUser(row)
+}
+
+func (r *Repository) ListCapabilitiesByRole(ctx context.Context, role string) ([]string, error) {
+	capabilities := make([]string, 0)
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(array_agg(capability ORDER BY capability), ARRAY[]::text[])
+		FROM role_capabilities
+		WHERE role = $1
+	`, normalizeRole(role)).Scan(&capabilities)
+	return capabilities, err
 }
 
 func (r *Repository) RevokeSession(ctx context.Context, tokenHash string) error {
@@ -143,4 +180,8 @@ func scanUserWithPassword(row rowScanner) (userWithPassword, error) {
 		&user.UpdatedAt,
 	)
 	return user, err
+}
+
+func normalizeRole(role string) string {
+	return strings.ToLower(strings.TrimSpace(role))
 }

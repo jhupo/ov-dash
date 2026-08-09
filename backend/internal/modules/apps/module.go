@@ -18,17 +18,24 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "apps"
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "apps",
+		Title:       "Apps",
+		Description: "Application inventory API.",
+		Kind:        "service",
+		Tags:        []string{"apps", "inventory"},
+	}
 }
 
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService(NewRepository(ctx.DB))}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.AppsRead)).Get("/apps", handler.List)
-}
-
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{capability.AppsRead}
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{service: NewService(NewRepository(ctx.DB))}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.AppsRead)).Get("/apps", handler.List)
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(capability.AppsRead)
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

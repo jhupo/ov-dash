@@ -7,6 +7,7 @@ import (
 	"time"
 
 	platformmodule "ov-dash/backend/internal/platform/module"
+	"ov-dash/backend/internal/queue"
 )
 
 func TestRunPlatformHealthChecksAggregatesDownStatus(t *testing.T) {
@@ -68,5 +69,18 @@ func TestRunPlatformHealthChecksReturnsOkWhenAllChecksPass(t *testing.T) {
 	}
 	if len(got.Items) != 1 || got.Items[0].Status != "ok" {
 		t.Fatalf("unexpected items: %#v", got.Items)
+	}
+}
+
+func TestPlatformWorkerHealthUsesExactReleaseMatch(t *testing.T) {
+	items := []queue.WorkerHeartbeat{
+		{ReleaseID: "ov-dash-1.9.9"},
+		{ReleaseID: "ov-dash-2.0.0"},
+	}
+	if !hasWorkerHeartbeatForRelease(items, queue.NormalizeReleaseID("v2.0.0")) {
+		t.Fatal("current release worker was not found")
+	}
+	if hasWorkerHeartbeatForRelease(items, queue.NormalizeReleaseID("v2.0")) {
+		t.Fatal("non-exact release worker was accepted")
 	}
 }

@@ -17,6 +17,10 @@ x-backend-build: &backend-build
     NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,postgres,redis,api,worker,frontend}
 
 services:
+  migrate:
+    image: ${BACKEND_IMAGE:-ov-dash-backend:local}
+    build: *backend-build
+
   api:
     image: ${BACKEND_IMAGE:-ov-dash-backend:local}
     build: *backend-build

@@ -21,9 +21,7 @@ export const Route = createFileRoute('/_authenticated')({
     useAuthStore.getState().auth.setUser(user)
     const module = getModuleForPath(location.pathname)
     if (
-      !canAccessModule(module, (capability) =>
-        roleAllows(user.role, capability)
-      )
+      !canAccessModule(module, (capability) => roleAllows(user, capability))
     ) {
       throw redirect({
         to: '/403',

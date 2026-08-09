@@ -1,10 +1,12 @@
+import { type Capability } from '@/services/module-registry'
 import { httpClient } from '@/lib/http-client'
 
 export type AuthUser = {
   id?: string
   name?: string
   email: string
-  role?: string | string[]
+  role: string
+  capabilities: Capability[]
   avatar?: string
 }
 

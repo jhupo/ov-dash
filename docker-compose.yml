@@ -8,14 +8,10 @@ x-backend-env: &backend-env
   HTTP_HOST: 0.0.0.0
   HTTP_PORT: 8080
   HTTP_ALLOWED_ORIGINS: ${HTTP_ALLOWED_ORIGINS:-http://localhost,http://192.168.2.17}
-  UPDATE_WORKDIR: ${UPDATE_WORKDIR:-/opt/ov-dash}
-  UPDATE_REMOTE: ${UPDATE_REMOTE:-origin}
-  UPDATE_IMAGE: ${UPDATE_IMAGE:-ov-dash-backend:${APP_VERSION:-local}}
-  UPDATE_BACKEND_IMAGE_REPOSITORY: ${UPDATE_BACKEND_IMAGE_REPOSITORY:-ghcr.io/jhupo/ov-dash-backend}
-  UPDATE_FRONTEND_IMAGE_REPOSITORY: ${UPDATE_FRONTEND_IMAGE_REPOSITORY:-ghcr.io/jhupo/ov-dash-frontend}
-  UPDATE_FALLBACK_BUILD: ${UPDATE_FALLBACK_BUILD:-false}
-  UPDATE_PROJECT: ${UPDATE_PROJECT:-ov-dash}
-  UPDATE_ENABLED: ${UPDATE_ENABLED:-true}
+  APP_SECRET_ACTIVE_KEY_ID: ${APP_SECRET_ACTIVE_KEY_ID:-local}
+  APP_SECRET_KEYS_JSON: '${APP_SECRET_KEYS_JSON:-{"local":"local-development-secret-change-me"}}'
+  UPDATE_SOCKET_PATH: ${UPDATE_SOCKET_PATH:-/run/ov-dash/updater.sock}
+  MIGRATIONS_DIR: /migrations
   POSTGRES_DSN: postgres://${POSTGRES_USER:-ov_dash}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-ov_dash}?sslmode=disable
   POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-20}
   POSTGRES_MIN_CONNS: ${POSTGRES_MIN_CONNS:-2}
@@ -24,12 +20,9 @@ x-backend-env: &backend-env
   REDIS_DB: ${REDIS_DB:-0}
   REDIS_PREFIX: ${REDIS_PREFIX:-ov-dash}
   WORKER_QUEUE_NAME: ${WORKER_QUEUE_NAME:-jobs:default}
-  WORKER_POLL_INTERVAL: ${WORKER_POLL_INTERVAL:-1s}
   WORKER_JOB_TIMEOUT: ${WORKER_JOB_TIMEOUT:-5m}
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
-  WORKER_VISIBILITY_LEASE: ${WORKER_VISIBILITY_LEASE:-10m}
-  PYTHON_BIN: python3
-  PYTHON_SCRIPTS_DIR: /app/scripts
+  WORKER_RESCUE_AFTER: ${WORKER_RESCUE_AFTER:-15m}
   TZ: ${TZ:-Asia/Shanghai}
   HTTP_PROXY: ${HTTP_PROXY:-}
   HTTPS_PROXY: ${HTTPS_PROXY:-}
@@ -50,7 +43,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
-      - ./backend/migrations:/migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
@@ -80,29 +72,74 @@ services:
     networks:
       - ov_dash
 
+  migrate:
+    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:0.1.0}
+    command: ["/app/migrate"]
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - ov_dash
+
+  bootstrap-admin:
+    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:0.1.0}
+    command: ["/app/bootstrap-admin"]
+    profiles: ["tools"]
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      <<: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - ov_dash
+
   api:
-    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:latest}
+    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:0.1.0}
     command: ["/app/api"]
-    user: "0:0"
     restart: unless-stopped
     env_file:
       - .env
     environment:
       <<: *backend-env
     ports:
-      - "${HTTP_PORT:-8080}:8080"
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+    stop_grace_period: 45s
     volumes:
-      - ./backend/migrations:/migrations:ro
-      - ./:/opt/ov-dash
-      - /root/.netrc:/root/.netrc:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: /run/ov-dash
+        target: /run/ov-dash
+        read_only: true
+    group_add:
+      - "${UPDATE_SOCKET_GID:-1000}"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -111,23 +148,28 @@ services:
       - ov_dash
 
   worker:
-    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:latest}
+    image: ${BACKEND_IMAGE:-ghcr.io/jhupo/ov-dash-backend:0.1.0}
     command: ["/app/worker"]
     restart: unless-stopped
+    stop_grace_period: 45s
     env_file:
       - .env
     environment:
       <<: *backend-env
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - ov_dash
 
   frontend:
-    image: ${FRONTEND_IMAGE:-ghcr.io/jhupo/ov-dash-frontend:latest}
+    image: ${FRONTEND_IMAGE:-ghcr.io/jhupo/ov-dash-frontend:0.1.0}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-80}:80"

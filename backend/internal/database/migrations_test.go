@@ -166,6 +166,55 @@ func TestWithMigrationLockConnLocksAroundApplyAndUnlocksOnError(t *testing.T) {
 	}
 }
 
+func TestVerifyExpectedMigrationsRejectsPendingFailedAndChecksumMismatch(t *testing.T) {
+	expected := map[string]string{
+		"0001_initial": "checksum-1",
+		"0002_auth":    "checksum-2",
+		"0003_jobs":    "checksum-3",
+	}
+	actual := map[string]migrationState{
+		"0001_initial": {Checksum: "checksum-1", Status: "applied"},
+		"0002_auth":    {Checksum: "checksum-2", Status: "failed"},
+		"0003_jobs":    {Checksum: "different", Status: "applied"},
+	}
+
+	err := verifyExpectedMigrations(expected, actual)
+	if err == nil || !strings.Contains(err.Error(), "0002_auth has status failed") ||
+		!strings.Contains(err.Error(), "0003_jobs checksum mismatch") {
+		t.Fatalf("Verify error = %v", err)
+	}
+
+	delete(actual, "0001_initial")
+	err = verifyExpectedMigrations(expected, actual)
+	if err == nil || !strings.Contains(err.Error(), "0001_initial is pending") {
+		t.Fatalf("pending migration error = %v", err)
+	}
+}
+
+func TestVerifyExpectedMigrationsRejectsUnexpectedAppliedRecord(t *testing.T) {
+	expected := map[string]string{"0001_initial": "checksum-1"}
+	actual := map[string]migrationState{
+		"0001_initial":  {Checksum: "checksum-1", Status: "applied"},
+		"older_removed": {Checksum: "checksum-old", Status: "applied"},
+	}
+	if err := verifyExpectedMigrations(expected, actual); err == nil || !strings.Contains(err.Error(), "older_removed is not present in the migration directory") {
+		t.Fatalf("unexpected applied migration error = %v", err)
+	}
+}
+
+func TestVerifyExpectedMigrationsRejectsUnexpectedFailedRecord(t *testing.T) {
+	err := verifyExpectedMigrations(
+		map[string]string{"0001_initial": "checksum-1"},
+		map[string]migrationState{
+			"0001_initial": {Checksum: "checksum-1", Status: "applied"},
+			"removed_file": {Checksum: "checksum-old", Status: "failed"},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "removed_file is not present in the migration directory (status failed)") {
+		t.Fatalf("Verify error = %v", err)
+	}
+}
+
 func writeMigrationFile(t *testing.T, name string, contents string) string {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), name)

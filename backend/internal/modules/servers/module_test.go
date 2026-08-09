@@ -1,17 +1,17 @@
 package servers
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/platform/audit"
+	"ov-dash/backend/internal/platform/capability"
+	platformmodule "ov-dash/backend/internal/platform/module"
 	"ov-dash/backend/internal/platform/redact"
-	"ov-dash/backend/internal/queue"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -25,6 +25,7 @@ func TestRecordAuditCapturesActorRequestAndMetadata(t *testing.T) {
 		Email: "ops@example.com",
 		Role:  "admin",
 	}))
+	request.RemoteAddr = "198.51.100.7:43210"
 	request.Header.Set("User-Agent", "servers-test")
 	request.Header.Set("X-Forwarded-For", "203.0.113.20, 192.0.2.10")
 
@@ -40,7 +41,7 @@ func TestRecordAuditCapturesActorRequestAndMetadata(t *testing.T) {
 	if entry.Actor.ID != "user-1" || entry.Actor.Email != "ops@example.com" || entry.Actor.Role != "admin" {
 		t.Fatalf("audit actor = %#v", entry.Actor)
 	}
-	if entry.IP != "203.0.113.20" || entry.UserAgent != "servers-test" {
+	if entry.IP != "198.51.100.7" || entry.UserAgent != "servers-test" {
 		t.Fatalf("request audit fields = ip %q ua %q", entry.IP, entry.UserAgent)
 	}
 	if entry.Metadata["command"] == "deploy password=super-secret" {
@@ -51,71 +52,96 @@ func TestRecordAuditCapturesActorRequestAndMetadata(t *testing.T) {
 	}
 }
 
-func TestUpdateAgentEnqueuesJobAndRecordsAudit(t *testing.T) {
-	auditRecorder := &fakeAuditRecorder{}
-	fakeQueue := &fakeServerJobQueue{}
-	handler := &Handler{
-		queue:     fakeQueue,
-		queueName: "jobs:test",
-		audit:     auditRecorder,
+func TestManifestOnlyDescribesInventoryAndSSH(t *testing.T) {
+	var module platformmodule.Module = Module{}
+	manifest := module.Manifest()
+	if manifest.ID != "servers" {
+		t.Fatalf("module id = %q, want servers", manifest.ID)
 	}
-	recorder := httptest.NewRecorder()
-	request := serverRequestWithID(http.MethodPost, "/server-connections/srv-1/agent/update", "srv-1")
-	request = request.WithContext(auth.ContextWithUser(request.Context(), auth.User{
-		ID:    "user-1",
-		Email: "ops@example.com",
-		Role:  "admin",
-	}))
-
-	handler.UpdateAgent(recorder, request)
-
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
-	}
-	if fakeQueue.queueName != "jobs:test" {
-		t.Fatalf("queue name = %q", fakeQueue.queueName)
-	}
-	if fakeQueue.job.Type != "server.agent.update" || fakeQueue.job.Payload["server_id"] != "srv-1" {
-		t.Fatalf("job = %#v", fakeQueue.job)
-	}
-	if fakeQueue.job.IdempotencyKey != ServerAgentUpdateIdempotencyKey("srv-1") {
-		t.Fatalf("idempotency key = %q", fakeQueue.job.IdempotencyKey)
-	}
-	entry := auditRecorder.single(t)
-	if entry.Action != "servers.agent.update" || entry.Result != "success" || entry.ResourceID != "srv-1" {
-		t.Fatalf("audit entry = %#v", entry)
-	}
-	if entry.Metadata["job_id"] != fakeQueue.job.ID || entry.Metadata["idempotency_key"] != fakeQueue.job.IdempotencyKey {
-		t.Fatalf("audit metadata = %#v", entry.Metadata)
+	text := strings.ToLower(manifest.Description + " " + strings.Join(manifest.Tags, " "))
+	for _, removed := range []string{"agent", "probe", "monitor", "metric", "collector"} {
+		if strings.Contains(text, removed) {
+			t.Fatalf("manifest still contains removed subsystem %q: %#v", removed, manifest)
+		}
 	}
 }
 
-func TestUpdateAgentMapsDuplicateJob(t *testing.T) {
-	auditRecorder := &fakeAuditRecorder{}
-	handler := &Handler{
-		queue:     &fakeServerJobQueue{err: queue.ErrDuplicateIdempotencyKey},
-		queueName: "jobs:test",
-		audit:     auditRecorder,
+func TestModuleRegistersServerCapabilities(t *testing.T) {
+	catalog, err := platformmodule.NewCatalog(platformmodule.Context{}, Module{})
+	if err != nil {
+		t.Fatalf("register servers module: %v", err)
 	}
-	recorder := httptest.NewRecorder()
-	request := serverRequestWithID(http.MethodPost, "/server-connections/srv-1/agent/update", "srv-1")
-
-	handler.UpdateAgent(recorder, request)
-
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
-	}
-	entry := auditRecorder.single(t)
-	if entry.Action != "servers.agent.update" || entry.Result != "failure" {
-		t.Fatalf("audit entry = %#v", entry)
+	descriptors := catalog.Descriptors()
+	if len(descriptors) != 1 || len(descriptors[0].Capabilities) != 4 {
+		t.Fatalf("server registration = %#v", descriptors)
 	}
 }
 
-func serverRequestWithID(method string, target string, id string) *http.Request {
-	request := httptest.NewRequest(method, target, bytes.NewBuffer(nil))
-	routeCtx := chi.NewRouteContext()
-	routeCtx.URLParams.Add("id", id)
-	return request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeCtx))
+func TestWebSSHRouteUsesProtectedSSHCapability(t *testing.T) {
+	publicRouter := chi.NewRouter()
+	protectedRouter := chi.NewRouter()
+	moduleContext := platformmodule.Context{
+		PublicRouter:    publicRouter,
+		ProtectedRouter: protectedRouter,
+		RequireCapability: func(required capability.Capability) func(http.Handler) http.Handler {
+			return func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if required != capability.ServersSSH {
+						next.ServeHTTP(w, r)
+						return
+					}
+					w.WriteHeader(http.StatusTeapot)
+				})
+			}
+		},
+	}
+	catalog, err := platformmodule.NewCatalog(moduleContext, Module{})
+	if err != nil {
+		t.Fatalf("create module catalog: %v", err)
+	}
+	catalog.RegisterHTTP(moduleContext)
+
+	path := "/server-connections/srv_1/ssh/ws?ticket=one-time"
+	publicResponse := httptest.NewRecorder()
+	publicRouter.ServeHTTP(publicResponse, httptest.NewRequest(http.MethodGet, path, nil))
+	if publicResponse.Code != http.StatusNotFound {
+		t.Fatalf("public route status = %d, want 404", publicResponse.Code)
+	}
+
+	protectedResponse := httptest.NewRecorder()
+	protectedRouter.ServeHTTP(protectedResponse, httptest.NewRequest(http.MethodGet, path, nil))
+	if protectedResponse.Code != http.StatusTeapot {
+		t.Fatalf("protected route status = %d, want capability middleware response", protectedResponse.Code)
+	}
+}
+
+func TestWebSocketOriginPolicy(t *testing.T) {
+	tests := []struct {
+		name           string
+		origin         string
+		allowedOrigins []string
+		want           bool
+	}{
+		{name: "same origin", origin: "https://dash.example.com", want: true},
+		{name: "configured origin", origin: "https://admin.example.com", allowedOrigins: []string{"https://admin.example.com/"}, want: true},
+		{name: "cross origin", origin: "https://attacker.example.com", want: false},
+		{name: "wildcard is not trusted", origin: "https://attacker.example.com", allowedOrigins: []string{"*"}, want: false},
+		{name: "missing origin", want: false},
+		{name: "origin with path", origin: "https://dash.example.com/path", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://dash.example.com/api/v1/server-connections/srv/ssh/ws", nil)
+			request.Host = "dash.example.com"
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if got := webSocketOriginAllowed(request, test.allowedOrigins); got != test.want {
+				t.Fatalf("webSocketOriginAllowed() = %t, want %t", got, test.want)
+			}
+		})
+	}
 }
 
 type fakeAuditRecorder struct {
@@ -133,22 +159,4 @@ func (r *fakeAuditRecorder) single(t *testing.T) audit.Entry {
 		t.Fatalf("audit entries = %d, want 1: %#v", len(r.entries), r.entries)
 	}
 	return r.entries[0]
-}
-
-type fakeServerJobQueue struct {
-	queueName string
-	job       queue.Job
-	err       error
-}
-
-func (q *fakeServerJobQueue) Enqueue(_ context.Context, queueName string, job queue.Job) error {
-	if q.err != nil {
-		return q.err
-	}
-	if job.ID == "" {
-		return errors.New("job id is required")
-	}
-	q.queueName = queueName
-	q.job = job
-	return nil
 }

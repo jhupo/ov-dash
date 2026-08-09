@@ -9,8 +9,6 @@ import {
   listServerConnections,
   requestServerShellTicket,
   saveServerConnection,
-  touchServerMonitor,
-  updateServerAgent,
   type ServerAuthType,
   type ServerConnection,
 } from '@/services/server-connections'
@@ -18,15 +16,12 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import {
-  CheckCircle2,
   Edit3,
   FileKey2,
   KeyRound,
-  Loader2,
   LockKeyhole,
   MoreHorizontal,
   Plus,
-  RefreshCw,
   Terminal,
   Trash2,
   Upload,
@@ -131,23 +126,13 @@ export function ServerConnectionSettings() {
     refetchInterval: 15_000,
   })
 
-  useEffect(() => {
-    if (!canWriteServers) return
-
-    void touchServerMonitor()
-    const timer = window.setInterval(() => {
-      void touchServerMonitor()
-    }, 10_000)
-    return () => window.clearInterval(timer)
-  }, [canWriteServers])
-
   const saveMutation = useMutation({
     mutationFn: saveServerConnection,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['server-connections'] })
       setOpen(false)
       setEditing(null)
-      toast.success('服务器设置已保存，后台会自动安装采集脚本')
+      toast.success('服务器设置已保存')
     },
     onError: () => {
       toast.error('服务器设置保存失败')
@@ -162,17 +147,6 @@ export function ServerConnectionSettings() {
     },
     onError: () => {
       toast.error('服务器删除失败')
-    },
-  })
-
-  const updateAgentMutation = useMutation({
-    mutationFn: updateServerAgent,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['server-connections'] })
-      toast.success('Agent 已更新')
-    },
-    onError: () => {
-      toast.error('Agent 更新失败')
     },
   })
 
@@ -206,7 +180,6 @@ export function ServerConnectionSettings() {
                 <TableHead>用户</TableHead>
                 <TableHead>认证</TableHead>
                 <TableHead>到期</TableHead>
-                <TableHead>采集</TableHead>
                 <TableHead className='w-24 text-right'>操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -226,9 +199,6 @@ export function ServerConnectionSettings() {
                   </TableCell>
                   <TableCell>{formatDate(item.expires_at)}</TableCell>
                   <TableCell>
-                    <CollectBadge item={item} />
-                  </TableCell>
-                  <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -247,15 +217,6 @@ export function ServerConnectionSettings() {
                         >
                           <Terminal />
                           连接
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={
-                            !canWriteServers || updateAgentMutation.isPending
-                          }
-                          onClick={() => updateAgentMutation.mutate(item.id)}
-                        >
-                          <RefreshCw />
-                          更新 Agent
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -353,29 +314,6 @@ function CredentialBadge({
   )
 }
 
-function CollectBadge({ item }: { item: ServerConnection }) {
-  if (item.collect_status === 'ok') {
-    return (
-      <Badge variant='outline' className='gap-1 text-emerald-600'>
-        <CheckCircle2 className='size-3' />
-        采集正常
-      </Badge>
-    )
-  }
-  if (item.collect_status === 'collecting') {
-    return (
-      <Badge variant='outline' className='gap-1'>
-        <Loader2 className='size-3 animate-spin' />
-        采集中
-      </Badge>
-    )
-  }
-  if (item.collect_status === 'error') {
-    return <Badge variant='secondary'>待采集</Badge>
-  }
-  return <Badge variant='secondary'>等待采集</Badge>
-}
-
 function ServerTerminalDialog({
   server,
   onOpenChange,
@@ -410,6 +348,7 @@ function ServerTerminalDialog({
 
     let disposed = false
     let failed = false
+    const decoder = new TextDecoder()
     element.textContent = ''
     const terminal = new XTerminal({
       allowProposedApi: false,
@@ -475,6 +414,7 @@ function ServerTerminalDialog({
         const { ticket } = await requestServerShellTicket(activeServer.id)
         if (disposed) return
         const socket = new WebSocket(buildWebSSHUrl(activeServer.id, ticket))
+        socket.binaryType = 'arraybuffer'
         socketRef.current = socket
 
         socket.onopen = () => {
@@ -486,7 +426,12 @@ function ServerTerminalDialog({
           window.setTimeout(() => terminal.focus(), 0)
         }
         socket.onmessage = (event) => {
-          const message = String(event.data)
+          const message =
+            event.data instanceof ArrayBuffer
+              ? decoder.decode(new Uint8Array(event.data), { stream: true })
+              : typeof event.data === 'string'
+                ? event.data
+                : ''
           if (!message) return
           setStatus('active')
           setStatusMessage('已连接')
@@ -520,6 +465,8 @@ function ServerTerminalDialog({
         }
         socket.onclose = (event) => {
           if (disposed) return
+          const tail = decoder.decode()
+          if (tail) terminal.write(tail)
           if (!failed) {
             setStatus('closed')
             setStatusMessage(

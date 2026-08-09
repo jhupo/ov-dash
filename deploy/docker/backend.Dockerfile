@@ -41,7 +41,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     -o /out/api ./cmd/api \
     && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w -X main.version=${APP_VERSION}" \
-    -o /out/worker ./cmd/worker
+    -o /out/worker ./cmd/worker \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${APP_VERSION}" \
+    -o /out/migrate ./cmd/migrate \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${APP_VERSION}" \
+    -o /out/bootstrap-admin ./cmd/bootstrap-admin
 
 FROM ${RUNTIME_IMAGE} AS runtime
 
@@ -58,25 +64,25 @@ LABEL org.opencontainers.image.title="ov-dash-backend" \
 
 ENV APP_ENV=production \
     TZ=Asia/Shanghai \
-    PYTHON_BIN=python3 \
-    PYTHON_SCRIPTS_DIR=/app/scripts \
     HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
     ALL_PROXY=${ALL_PROXY} \
     NO_PROXY=${NO_PROXY}
 
 RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${APK_REPOSITORY}|g" /etc/apk/repositories \
-    && apk add --no-cache ca-certificates docker-cli docker-cli-compose git openssh-client python3 py3-pip tzdata wget \
+    && apk add --no-cache ca-certificates openssh-client tzdata wget \
     && addgroup -S app \
     && adduser -S -D -H -h /app -s /sbin/nologin -G app app \
-    && mkdir -p /app/scripts \
+    && mkdir -p /app \
     && chown -R app:app /app
 
 WORKDIR /app
 
 COPY --from=build --chown=app:app /out/api /app/api
 COPY --from=build --chown=app:app /out/worker /app/worker
-COPY --chown=app:app backend/scripts /app/scripts
+COPY --from=build --chown=app:app /out/migrate /app/migrate
+COPY --from=build --chown=app:app /out/bootstrap-admin /app/bootstrap-admin
+COPY --chown=app:app backend/migrations /migrations
 
 USER app
 

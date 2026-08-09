@@ -13,6 +13,7 @@ type Job struct {
 	Type           string         `json:"type"`
 	Payload        map[string]any `json:"payload"`
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	ScheduledAt    *time.Time     `json:"scheduled_at,omitempty"`
 	Attempts       int            `json:"attempts"`
 	MaxAttempts    int            `json:"max_attempts"`
 	CreatedAt      time.Time      `json:"created_at"`
@@ -57,6 +58,10 @@ func (j *Job) Normalize() {
 	}
 	if j.CreatedAt.IsZero() {
 		j.CreatedAt = time.Now().UTC()
+	}
+	if j.ScheduledAt != nil {
+		scheduledAt := j.ScheduledAt.UTC()
+		j.ScheduledAt = &scheduledAt
 	}
 }
 

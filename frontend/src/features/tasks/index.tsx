@@ -32,7 +32,7 @@ export function Tasks() {
           <div>
             <h2 className='text-2xl font-bold tracking-tight'>任务</h2>
             <p className='text-muted-foreground'>
-              查看后台事件队列和采集任务状态。
+              查看后台任务的执行状态和结果。
             </p>
           </div>
           <TasksPrimaryButtons />

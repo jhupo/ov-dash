@@ -30,24 +30,34 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "proxy"
-}
-
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	handler := &Handler{service: NewService(NewRepositoryWithSecrets(ctx.DB, ctx.Secrets))}
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ProxyRead)).Get("/proxy-settings", handler.Get)
-	ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ProxyWrite)).Put("/proxy-settings", handler.Update)
-}
-
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{
-		capability.ProxyRead,
-		capability.ProxyWrite,
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "proxy",
+		Title:       "Proxy",
+		Description: "Shared outbound proxy settings used by platform integrations.",
+		Kind:        "platform",
+		Tags:        []string{"platform", "network", "settings"},
 	}
 }
 
-func (Module) SettingsSchemas() []settings.Schema {
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		handler := &Handler{service: NewService(NewRepository(ctx.DB, ctx.Secrets))}
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ProxyRead)).Get("/proxy-settings", handler.Get)
+		ctx.ProtectedRouter.With(ctx.RequireCapability(capability.ProxyWrite)).Put("/proxy-settings", handler.Update)
+	}); err != nil {
+		return err
+	}
+	if err := reg.Capabilities(
+		capability.ProxyRead,
+		capability.ProxyWrite,
+	); err != nil {
+		return err
+	}
+	return reg.Settings(settingsSchemas()...)
+}
+
+func settingsSchemas() []settings.Schema {
 	minPort := 1.0
 	maxPort := 65535.0
 	return []settings.Schema{

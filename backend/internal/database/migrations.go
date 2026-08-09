@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,6 +63,11 @@ type MigrationDiagnostic struct {
 	Files   []string
 }
 
+type migrationState struct {
+	Checksum string
+	Status   string
+}
+
 func NewMigrationRunner(db *db.Pool) *MigrationRunner {
 	return &MigrationRunner{db: db}
 }
@@ -105,6 +111,88 @@ func (r *MigrationRunner) ApplyDir(ctx context.Context, dir string) (MigrationSu
 		return summary, err
 	}
 	return summary, nil
+}
+
+// VerifyDir is a read-only startup check that rejects missing, failed, or
+// modified migrations before an API instance becomes ready.
+func (r *MigrationRunner) VerifyDir(ctx context.Context, dir string) error {
+	if r == nil || r.db == nil {
+		return errors.New("migration database is required")
+	}
+	files, _, err := migrationFiles(dir)
+	if err != nil {
+		return fmt.Errorf("read migration directory: %w", err)
+	}
+	expected := make(map[string]string, len(files))
+	for _, file := range files {
+		contents, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", filepath.Base(file), err)
+		}
+		version, _ := migrationVersion(file)
+		expected[version] = checksum(contents)
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT version, checksum, status
+		FROM schema_migrations
+		ORDER BY version
+	`)
+	if err != nil {
+		return fmt.Errorf("read applied migrations: %w", err)
+	}
+	defer rows.Close()
+
+	actual := make(map[string]migrationState)
+	for rows.Next() {
+		var version string
+		var state migrationState
+		if err := rows.Scan(&version, &state.Checksum, &state.Status); err != nil {
+			return fmt.Errorf("scan applied migration: %w", err)
+		}
+		actual[version] = state
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read applied migrations: %w", err)
+	}
+	return verifyExpectedMigrations(expected, actual)
+}
+
+func verifyExpectedMigrations(expected map[string]string, actual map[string]migrationState) error {
+	issues := make([]string, 0)
+	versions := make([]string, 0, len(expected))
+	for version := range expected {
+		versions = append(versions, version)
+	}
+	slices.Sort(versions)
+	for _, version := range versions {
+		state, exists := actual[version]
+		if !exists {
+			issues = append(issues, version+" is pending")
+			continue
+		}
+		if state.Status != "applied" {
+			issues = append(issues, fmt.Sprintf("%s has status %s", version, state.Status))
+			continue
+		}
+		if state.Checksum != expected[version] {
+			issues = append(issues, version+" checksum mismatch")
+		}
+	}
+	extraVersions := make([]string, 0)
+	for version := range actual {
+		if _, exists := expected[version]; !exists {
+			extraVersions = append(extraVersions, version)
+		}
+	}
+	slices.Sort(extraVersions)
+	for _, version := range extraVersions {
+		issues = append(issues, fmt.Sprintf("%s is not present in the migration directory (status %s)", version, actual[version].Status))
+	}
+	if len(issues) > 0 {
+		return fmt.Errorf("migration verification failed: %s", strings.Join(issues, "; "))
+	}
+	return nil
 }
 
 func migrationFiles(dir string) ([]string, []MigrationDiagnostic, error) {
@@ -376,11 +464,11 @@ func migrationVersion(file string) (string, string) {
 	switch parts[1] {
 	case "auth":
 		return name, "auth"
-	case "job":
+	case "job", "jobs":
 		return name, "jobs"
 	case "proxy":
 		return name, "proxy"
-	case "server":
+	case "server", "servers":
 		return name, "servers"
 	case "telegram":
 		return name, "notifications"

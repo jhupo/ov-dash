@@ -1,8 +1,12 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +18,6 @@ type Config struct {
 	Postgres   PostgresConfig
 	Redis      RedisConfig
 	Worker     WorkerConfig
-	Python     PythonConfig
 	Update     UpdateConfig
 	Migrations MigrationsConfig
 	Uploads    UploadsConfig
@@ -29,13 +32,24 @@ type AppConfig struct {
 }
 
 type HTTPConfig struct {
-	Host           string
-	Port           int
-	AllowedOrigins []string
+	Host                string
+	Port                int
+	AllowedOrigins      []string
+	TrustedProxyCIDRs   []string
+	SessionCookieSecure bool
 }
 
 func (c HTTPConfig) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+func (c HTTPConfig) Validate() error {
+	for _, value := range c.TrustedProxyCIDRs {
+		if _, err := netip.ParsePrefix(value); err != nil {
+			return fmt.Errorf("invalid HTTP_TRUSTED_PROXY_CIDRS entry %q: %w", value, err)
+		}
+	}
+	return nil
 }
 
 type PostgresConfig struct {
@@ -54,27 +68,14 @@ type RedisConfig struct {
 }
 
 type WorkerConfig struct {
-	QueueName       string
-	PollInterval    time.Duration
-	JobTimeout      time.Duration
-	Concurrency     int
-	VisibilityLease time.Duration
-}
-
-type PythonConfig struct {
-	Bin        string
-	ScriptsDir string
+	QueueName   string
+	JobTimeout  time.Duration
+	Concurrency int
+	RescueAfter time.Duration
 }
 
 type UpdateConfig struct {
-	WorkDir                 string
-	Remote                  string
-	Image                   string
-	BackendImageRepository  string
-	FrontendImageRepository string
-	FallbackBuild           bool
-	Project                 string
-	Enabled                 bool
+	SocketPath string
 }
 
 type MigrationsConfig struct {
@@ -86,13 +87,38 @@ type UploadsConfig struct {
 }
 
 type SecurityConfig struct {
-	SecretKey string
+	ActiveSecretKeyID string
+	SecretKeys        map[string]string
+	validationError   error
 }
 
 const DefaultSecretKey = "local-development-secret-change-me"
 
-func (c SecurityConfig) UsesDefaultSecretKey() bool {
-	return strings.TrimSpace(c.SecretKey) == DefaultSecretKey
+func (c SecurityConfig) DefaultSecretKeyIDs() []string {
+	ids := make([]string, 0)
+	for id, key := range c.SecretKeys {
+		if strings.TrimSpace(key) == DefaultSecretKey {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (c SecurityConfig) Validate() error {
+	if c.validationError != nil {
+		return c.validationError
+	}
+	if strings.TrimSpace(c.ActiveSecretKeyID) == "" {
+		return errors.New("APP_SECRET_ACTIVE_KEY_ID is required")
+	}
+	if len(c.SecretKeys) == 0 {
+		return errors.New("APP_SECRET_KEYS_JSON must contain at least one key")
+	}
+	if strings.TrimSpace(c.SecretKeys[c.ActiveSecretKeyID]) == "" {
+		return fmt.Errorf("active secret key %q is missing from APP_SECRET_KEYS_JSON", c.ActiveSecretKeyID)
+	}
+	return nil
 }
 
 func Load() Config {
@@ -104,9 +130,11 @@ func Load() Config {
 			ShutdownTimeout: durationEnv("APP_SHUTDOWN_TIMEOUT", 15*time.Second),
 		},
 		HTTP: HTTPConfig{
-			Host:           env("HTTP_HOST", "0.0.0.0"),
-			Port:           intEnv("HTTP_PORT", 8080),
-			AllowedOrigins: listEnv("HTTP_ALLOWED_ORIGINS", []string{"http://localhost:5173"}),
+			Host:                env("HTTP_HOST", "0.0.0.0"),
+			Port:                intEnv("HTTP_PORT", 8080),
+			AllowedOrigins:      listEnv("HTTP_ALLOWED_ORIGINS", []string{"http://localhost:5173"}),
+			TrustedProxyCIDRs:   listEnv("HTTP_TRUSTED_PROXY_CIDRS", nil),
+			SessionCookieSecure: boolEnv("COOKIE_SECURE", false),
 		},
 		Postgres: PostgresConfig{
 			DSN:             env("POSTGRES_DSN", "postgres://ov_dash:ov_dash@localhost:5432/ov_dash?sslmode=disable"),
@@ -122,25 +150,13 @@ func Load() Config {
 			Prefix:   env("REDIS_PREFIX", "ov-dash"),
 		},
 		Worker: WorkerConfig{
-			QueueName:       env("WORKER_QUEUE_NAME", "jobs:default"),
-			PollInterval:    durationEnv("WORKER_POLL_INTERVAL", time.Second),
-			JobTimeout:      durationEnv("WORKER_JOB_TIMEOUT", 5*time.Minute),
-			Concurrency:     intEnv("WORKER_CONCURRENCY", 4),
-			VisibilityLease: durationEnv("WORKER_VISIBILITY_LEASE", 10*time.Minute),
-		},
-		Python: PythonConfig{
-			Bin:        env("PYTHON_BIN", "python3"),
-			ScriptsDir: env("PYTHON_SCRIPTS_DIR", "./scripts"),
+			QueueName:   env("WORKER_QUEUE_NAME", "jobs:default"),
+			JobTimeout:  durationEnv("WORKER_JOB_TIMEOUT", 5*time.Minute),
+			Concurrency: intEnv("WORKER_CONCURRENCY", 4),
+			RescueAfter: durationEnv("WORKER_RESCUE_AFTER", 15*time.Minute),
 		},
 		Update: UpdateConfig{
-			WorkDir:                 env("UPDATE_WORKDIR", "/opt/ov-dash"),
-			Remote:                  env("UPDATE_REMOTE", "origin"),
-			Image:                   env("UPDATE_IMAGE", "ov-dash-backend:local"),
-			BackendImageRepository:  env("UPDATE_BACKEND_IMAGE_REPOSITORY", "ghcr.io/jhupo/ov-dash-backend"),
-			FrontendImageRepository: env("UPDATE_FRONTEND_IMAGE_REPOSITORY", "ghcr.io/jhupo/ov-dash-frontend"),
-			FallbackBuild:           boolEnv("UPDATE_FALLBACK_BUILD", false),
-			Project:                 env("UPDATE_PROJECT", "ov-dash"),
-			Enabled:                 boolEnv("UPDATE_ENABLED", true),
+			SocketPath: env("UPDATE_SOCKET_PATH", "/run/ov-dash/updater.sock"),
 		},
 		Migrations: MigrationsConfig{
 			Dir: env("MIGRATIONS_DIR", "/migrations"),
@@ -148,25 +164,42 @@ func Load() Config {
 		Uploads: UploadsConfig{
 			WikiDir: env("WIKI_UPLOADS_DIR", "./uploads/wiki"),
 		},
-		Security: SecurityConfig{
-			SecretKey: env("APP_SECRET_KEY", DefaultSecretKey),
-		},
+		Security: loadSecurityConfig(),
 	}
 }
 
-func boolEnv(key string, fallback bool) bool {
-	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	if raw == "" {
-		return fallback
+func loadSecurityConfig() SecurityConfig {
+	config := SecurityConfig{
+		ActiveSecretKeyID: env("APP_SECRET_ACTIVE_KEY_ID", "local"),
+		SecretKeys:        map[string]string{},
 	}
-	switch raw {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
+	raw := env("APP_SECRET_KEYS_JSON", `{"local":"`+DefaultSecretKey+`"}`)
+	if err := json.Unmarshal([]byte(raw), &config.SecretKeys); err != nil {
+		config.validationError = fmt.Errorf("decode APP_SECRET_KEYS_JSON: %w", err)
+		return config
 	}
+	rawIDs := make([]string, 0, len(config.SecretKeys))
+	for id := range config.SecretKeys {
+		rawIDs = append(rawIDs, id)
+	}
+	sort.Strings(rawIDs)
+
+	normalized := make(map[string]string, len(config.SecretKeys))
+	for _, rawID := range rawIDs {
+		id := strings.TrimSpace(rawID)
+		key := strings.TrimSpace(config.SecretKeys[rawID])
+		if id == "" || key == "" {
+			config.validationError = errors.New("APP_SECRET_KEYS_JSON contains an empty key id or value")
+			return config
+		}
+		if _, exists := normalized[id]; exists {
+			config.validationError = fmt.Errorf("APP_SECRET_KEYS_JSON contains duplicate key id %q after trimming", id)
+			return config
+		}
+		normalized[id] = key
+	}
+	config.SecretKeys = normalized
+	return config
 }
 
 func env(key, fallback string) string {
@@ -195,6 +228,18 @@ func durationEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func boolEnv(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
 	if err != nil {
 		return fallback
 	}

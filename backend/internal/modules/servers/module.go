@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
 	"ov-dash/backend/internal/platform/redact"
-	"ov-dash/backend/internal/queue"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -23,39 +21,31 @@ import (
 type Module struct{}
 
 type Handler struct {
-	service   *Service
-	collector *Collector
-	queue     serverJobQueue
-	queueName string
-	activity  agentActivityQueue
-	cache     cacheStore
-	audit     audit.RequestRecorder
-}
-
-type serverJobQueue interface {
-	Enqueue(ctx context.Context, queueName string, job queue.Job) error
+	inventory      *InventoryService
+	ssh            *SSHAccessService
+	cache          cacheStore
+	audit          audit.RequestRecorder
+	allowedOrigins []string
 }
 
 type cacheStore interface {
-	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value string, ttl time.Duration) error
-	Delete(ctx context.Context, keys ...string) error
+	Take(ctx context.Context, key string) (string, error)
 }
 
 type saveServerConnectionRequest struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	GroupName       string  `json:"group_name"`
-	Region          string  `json:"region"`
-	Host            string  `json:"host"`
-	Port            int     `json:"port"`
-	Username        string  `json:"username"`
-	AuthType        string  `json:"auth_type"`
-	Password        *string `json:"password"`
-	PrivateKey      *string `json:"private_key"`
-	ExpiresAt       *string `json:"expires_at"`
-	CollectInterval int     `json:"collect_interval_seconds"`
-	ClearSecret     bool    `json:"clear_secret"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	GroupName   string  `json:"group_name"`
+	Region      string  `json:"region"`
+	Host        string  `json:"host"`
+	Port        int     `json:"port"`
+	Username    string  `json:"username"`
+	AuthType    string  `json:"auth_type"`
+	Password    *string `json:"password"`
+	PrivateKey  *string `json:"private_key"`
+	ExpiresAt   *string `json:"expires_at"`
+	ClearSecret bool    `json:"clear_secret"`
 }
 
 type serverCommandRequest struct {
@@ -66,57 +56,70 @@ func NewModule() Module {
 	return Module{}
 }
 
-func (Module) ID() string {
-	return "servers"
-}
-
-func (Module) RegisterHTTP(ctx platformmodule.Context) {
-	repository := NewRepositoryWithSecrets(ctx.DB, ctx.Secrets)
-	handler := &Handler{
-		service:   NewService(repository),
-		collector: NewCollector(repository),
-		queue:     ctx.Queue,
-		queueName: ctx.Config.Worker.QueueName,
-		activity:  ctx.Queue,
-		cache:     ctx.Cache,
-		audit:     ctx.Audit,
+func (Module) Manifest() platformmodule.Manifest {
+	return platformmodule.Manifest{
+		ID:          "servers",
+		Title:       "Servers",
+		Description: "Server inventory, credential storage, SSH commands, and WebSSH access.",
+		Kind:        "service",
+		Tags:        []string{"servers", "inventory", "ssh"},
 	}
-	readServers := ctx.RequireCapability(capability.ServersRead)
-	writeServers := ctx.RequireCapability(capability.ServersWrite)
-	deleteServers := ctx.RequireCapability(capability.ServersDelete)
-	sshServers := ctx.RequireCapability(capability.ServersSSH)
-
-	ctx.ProtectedRouter.With(readServers).Get("/server-connections", handler.List)
-	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/metrics", handler.Metrics)
-	ctx.ProtectedRouter.With(writeServers).Post("/server-connections/monitor/touch", handler.TouchMonitor)
-	ctx.ProtectedRouter.With(writeServers).Post("/server-connections", handler.Save)
-	ctx.ProtectedRouter.With(writeServers).Put("/server-connections/{id}", handler.Save)
-	ctx.ProtectedRouter.With(writeServers).Post("/server-connections/{id}/agent/update", handler.UpdateAgent)
-	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/status", handler.AgentStatus)
-	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/diagnostics", handler.AgentDiagnostics)
-	ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}/agent/activity", handler.AgentActivity)
-	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/command", handler.RunCommand)
-	ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/ticket", handler.IssueShellTicket)
-	ctx.PublicRouter.Get("/server-connections/{id}/ssh/ws", handler.Shell)
-	ctx.ProtectedRouter.With(deleteServers).Delete("/server-connections/{id}", handler.Delete)
 }
 
-func (Module) Capabilities() []capability.Capability {
-	return []capability.Capability{
+func (Module) Register(reg *platformmodule.Registrar) error {
+	if err := reg.HTTP(func(ctx platformmodule.Context) {
+		repository := NewRepository(ctx.DB, ctx.Secrets)
+		handler := &Handler{
+			inventory:      NewInventoryService(repository),
+			ssh:            NewSSHAccessService(repository, nil, time.Now),
+			cache:          ctx.Cache,
+			audit:          ctx.Audit,
+			allowedOrigins: append([]string(nil), ctx.Config.HTTP.AllowedOrigins...),
+		}
+		readServers := ctx.RequireCapability(capability.ServersRead)
+		writeServers := ctx.RequireCapability(capability.ServersWrite)
+		deleteServers := ctx.RequireCapability(capability.ServersDelete)
+		sshServers := ctx.RequireCapability(capability.ServersSSH)
+
+		ctx.ProtectedRouter.With(readServers).Get("/server-connections", handler.List)
+		ctx.ProtectedRouter.With(readServers).Get("/server-connections/{id}", handler.Get)
+		ctx.ProtectedRouter.With(writeServers).Post("/server-connections", handler.Save)
+		ctx.ProtectedRouter.With(writeServers).Put("/server-connections/{id}", handler.Save)
+		ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/command", handler.RunCommand)
+		ctx.ProtectedRouter.With(sshServers).Post("/server-connections/{id}/ssh/ticket", handler.IssueShellTicket)
+		ctx.ProtectedRouter.With(sshServers).Get("/server-connections/{id}/ssh/ws", handler.Shell)
+		ctx.ProtectedRouter.With(deleteServers).Delete("/server-connections/{id}", handler.Delete)
+	}); err != nil {
+		return err
+	}
+	return reg.Capabilities(
 		capability.ServersRead,
 		capability.ServersWrite,
 		capability.ServersDelete,
 		capability.ServersSSH,
-	}
+	)
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.List(r.Context())
+	items, err := h.inventory.List(r.Context())
 	if err != nil {
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_connections_list_failed"})
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+	item, err := h.inventory.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if IsNotFound(err) {
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "server_connection_not_found"})
+			return
+		}
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_connection_get_failed"})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, item.Public())
 }
 
 func (h *Handler) Save(w http.ResponseWriter, r *http.Request) {
@@ -134,20 +137,19 @@ func (h *Handler) Save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.service.Save(r.Context(), SaveInput{
-		ID:              payload.ID,
-		Name:            payload.Name,
-		GroupName:       payload.GroupName,
-		Region:          payload.Region,
-		Host:            payload.Host,
-		Port:            payload.Port,
-		Username:        payload.Username,
-		AuthType:        payload.AuthType,
-		Password:        payload.Password,
-		PrivateKey:      payload.PrivateKey,
-		ExpiresAt:       expiresAt,
-		CollectInterval: payload.CollectInterval,
-		ClearSecret:     payload.ClearSecret,
+	item, err := h.inventory.Save(r.Context(), SaveInput{
+		ID:          payload.ID,
+		Name:        payload.Name,
+		GroupName:   payload.GroupName,
+		Region:      payload.Region,
+		Host:        payload.Host,
+		Port:        payload.Port,
+		Username:    payload.Username,
+		AuthType:    payload.AuthType,
+		Password:    payload.Password,
+		PrivateKey:  payload.PrivateKey,
+		ExpiresAt:   expiresAt,
+		ClearSecret: payload.ClearSecret,
 	})
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -165,100 +167,6 @@ func (h *Handler) Save(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, item)
-}
-
-func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
-	since := time.Now().Add(-time.Hour)
-	switch strings.TrimSpace(r.URL.Query().Get("range")) {
-	case "4h":
-		since = time.Now().Add(-4 * time.Hour)
-	case "1d":
-		since = time.Now().Add(-24 * time.Hour)
-	case "7d":
-		since = time.Now().Add(-7 * 24 * time.Hour)
-	case "30d":
-		since = time.Now().Add(-30 * 24 * time.Hour)
-	}
-	items, err := h.service.Samples(r.Context(), chi.URLParam(r, "id"), since)
-	if err != nil {
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_metrics_list_failed"})
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (h *Handler) TouchMonitor(w http.ResponseWriter, r *http.Request) {
-	if err := h.collector.TouchMonitor(r.Context(), 30*time.Second); err != nil {
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_monitor_touch_failed"})
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
-	serverID := chi.URLParam(r, "id")
-	if h.queue == nil {
-		h.recordAudit(r, "servers.agent.update", serverID, "failure", "job_queue_unavailable", nil)
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "job_queue_unavailable"})
-		return
-	}
-	job, err := NewAgentUpdateJob(serverID)
-	if err != nil {
-		h.recordAudit(r, "servers.agent.update", serverID, "failure", err.Error(), nil)
-		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := h.queue.Enqueue(r.Context(), h.queueName, job); err != nil {
-		h.recordAudit(r, "servers.agent.update", serverID, "failure", err.Error(), nil)
-		if errors.Is(err, queue.ErrDuplicateIdempotencyKey) {
-			httpx.WriteJSON(w, http.StatusConflict, map[string]string{"error": "duplicate_agent_update_job"})
-			return
-		}
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "agent_update_enqueue_failed"})
-		return
-	}
-	h.recordAudit(r, "servers.agent.update", serverID, "success", "", map[string]any{
-		"job_id":          job.ID,
-		"job_type":        job.Type,
-		"idempotency_key": job.IdempotencyKey,
-	})
-	httpx.WriteJSON(w, http.StatusAccepted, job)
-}
-
-func (h *Handler) AgentStatus(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
-	status, err := h.collector.AgentStatus(ctx, chi.URLParam(r, "id"))
-	if err != nil {
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, status)
-}
-
-func (h *Handler) AgentDiagnostics(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	diagnostics, err := h.collector.AgentDiagnostics(ctx, chi.URLParam(r, "id"))
-	if err != nil {
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, diagnostics)
-}
-
-func (h *Handler) AgentActivity(w http.ResponseWriter, r *http.Request) {
-	item, err := h.service.Get(r.Context(), chi.URLParam(r, "id"))
-	if err != nil {
-		httpx.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "server_connection_not_found"})
-		return
-	}
-	activity, err := BuildAgentActivity(r.Context(), item, h.activity)
-	if err != nil {
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_agent_activity_failed"})
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, activity)
 }
 
 func (h *Handler) RunCommand(w http.ResponseWriter, r *http.Request) {
@@ -279,11 +187,16 @@ func (h *Handler) RunCommand(w http.ResponseWriter, r *http.Request) {
 		"command":        redact.Text(command),
 		"command_length": len(command),
 	}
-	output, err := h.collector.RunCommand(ctx, serverID, command)
+	output, err := h.ssh.RunCommand(ctx, serverID, command)
 	if err != nil {
-		h.recordAudit(r, "servers.ssh.command", serverID, "failure", err.Error(), metadata)
-		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{
-			"error":  err.Error(),
+		code := sshFailureCode(err)
+		h.recordAudit(r, "servers.ssh.command", serverID, "failure", code, metadata)
+		status := http.StatusBadGateway
+		if IsNotFound(err) {
+			status = http.StatusNotFound
+		}
+		httpx.WriteJSON(w, status, map[string]string{
+			"error":  code,
 			"output": output,
 		})
 		return
@@ -294,6 +207,11 @@ func (h *Handler) RunCommand(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) IssueShellTicket(w http.ResponseWriter, r *http.Request) {
 	serverID := chi.URLParam(r, "id")
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok || strings.TrimSpace(user.ID) == "" {
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
 	if h.cache == nil {
 		h.recordAudit(r, "servers.ssh.ticket", serverID, "failure", "ssh_ticket_store_unavailable", nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_store_unavailable"})
@@ -303,6 +221,14 @@ func (h *Handler) IssueShellTicket(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_server_id"})
 		return
 	}
+	if _, err := h.inventory.Get(r.Context(), serverID); err != nil {
+		if IsNotFound(err) {
+			httpx.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "server_connection_not_found"})
+			return
+		}
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_connection_get_failed"})
+		return
+	}
 	ticket, err := randomTicket()
 	if err != nil {
 		h.recordAudit(r, "servers.ssh.ticket", serverID, "failure", err.Error(), nil)
@@ -310,7 +236,13 @@ func (h *Handler) IssueShellTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expiresIn, expiresAt := shellTicketExpiry(time.Now())
-	if err := h.cache.Set(r.Context(), shellTicketKey(ticket), serverID, expiresIn); err != nil {
+	ticketValue, err := encodeShellTicket(shellTicket{ServerID: serverID, UserID: user.ID})
+	if err != nil {
+		h.recordAudit(r, "servers.ssh.ticket", serverID, "failure", "ssh_ticket_create_failed", nil)
+		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_create_failed"})
+		return
+	}
+	if err := h.cache.Set(r.Context(), shellTicketKey(ticket), ticketValue, expiresIn); err != nil {
 		h.recordAudit(r, "servers.ssh.ticket", serverID, "failure", err.Error(), nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "ssh_ticket_store_failed"})
 		return
@@ -324,100 +256,35 @@ func (h *Handler) IssueShellTicket(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Shell(w http.ResponseWriter, r *http.Request) {
 	serverID := chi.URLParam(r, "id")
-	if err := h.consumeShellTicket(r.Context(), serverID, r.URL.Query().Get("ticket")); err != nil {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok || strings.TrimSpace(user.ID) == "" {
+		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !isWebSocketUpgradeRequest(r) {
+		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "websocket_upgrade_required"})
+		return
+	}
+	if !webSocketOriginAllowed(r, h.allowedOrigins) {
+		httpx.WriteJSON(w, http.StatusForbidden, map[string]string{"error": "websocket_origin_forbidden"})
+		return
+	}
+	if err := h.consumeShellTicket(r.Context(), serverID, user.ID, r.URL.Query().Get("ticket")); err != nil {
 		httpx.WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
 
-	ws, err := upgradeWebSocket(w, r)
+	ws, err := upgradeWebSocket(w, r, h.allowedOrigins)
 	if err != nil {
-		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "websocket_upgrade_failed"})
 		return
 	}
-	defer ws.close()
-
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-
-	client, session, err := h.collector.Shell(ctx, serverID)
-	if err != nil {
-		_ = ws.writeText("connect failed: " + err.Error() + "\r\n")
-		return
-	}
-	defer client.Close()
-	defer session.Close()
-
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		_ = ws.writeText("open stdin failed: " + err.Error() + "\r\n")
-		return
-	}
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		_ = ws.writeText("open stdout failed: " + err.Error() + "\r\n")
-		return
-	}
-	stderr, err := session.StderrPipe()
-	if err != nil {
-		_ = ws.writeText("open stderr failed: " + err.Error() + "\r\n")
-		return
-	}
-	if err := session.Shell(); err != nil {
-		_ = ws.writeText("start shell failed: " + err.Error() + "\r\n")
-		return
-	}
-
-	done := make(chan struct{})
-	stream := func(reader io.Reader) {
-		buffer := make([]byte, 4096)
-		for {
-			n, err := reader.Read(buffer)
-			if n > 0 {
-				if writeErr := ws.writeText(string(buffer[:n])); writeErr != nil {
-					cancel()
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}
-	go stream(stdout)
-	go stream(stderr)
-	go func() {
-		defer close(done)
-		for {
-			text, err := ws.readText()
-			if err != nil {
-				cancel()
-				return
-			}
-			if text == "" {
-				continue
-			}
-			if handled, err := handleTerminalResize(session, text); handled {
-				if err != nil {
-					_ = ws.writeText("resize failed: " + err.Error() + "\r\n")
-				}
-				continue
-			}
-			if _, err := io.WriteString(stdin, text); err != nil {
-				cancel()
-				return
-			}
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-	case <-done:
-	}
+	defer ws.Close()
+	h.serveShell(r.Context(), ws, serverID)
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	serverID := chi.URLParam(r, "id")
-	if err := h.service.Delete(r.Context(), serverID); err != nil {
+	if err := h.inventory.Delete(r.Context(), serverID); err != nil {
 		h.recordAudit(r, "servers.delete", serverID, "failure", err.Error(), nil)
 		httpx.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_connection_delete_failed"})
 		return

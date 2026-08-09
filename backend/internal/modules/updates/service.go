@@ -6,575 +6,225 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"io"
+	"net"
+	"net/http"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"ov-dash/backend/internal/config"
-
-	"go.uber.org/zap"
+	"ov-dash/backend/internal/updater"
 )
 
+const (
+	updaterBaseURL     = "http://updater"
+	maxResponseBytes   = 1 << 20
+	healthTimeout      = 2 * time.Second
+	statusTimeout      = 5 * time.Second
+	checkTimeout       = 30 * time.Second
+	operationTimeout   = 5 * time.Second
+	applyTimeout       = 10 * time.Second
+	unixConnectTimeout = 2 * time.Second
+)
+
+var operationIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+
 var (
-	ErrUpdateDisabled = errors.New("online update is disabled")
-	ErrUpdateRunning  = errors.New("online update is already running")
-	ErrNoNewVersion   = errors.New("no new version available")
-	ErrNotGitRepo     = errors.New("update workdir is not a git repository")
-	ErrUpdateNotReady = errors.New("update is not ready to restart")
+	ErrInvalidSocketPath = errors.New("updater socket path is required")
+	ErrInvalidOperation  = errors.New("invalid updater operation id")
+	ErrResponseTooLarge  = errors.New("updater response exceeds size limit")
 )
 
 type Service struct {
-	cfg    config.Config
-	logger *zap.Logger
-
-	mu       sync.Mutex
-	check    *CheckResult
-	updating bool
-	update   *UpdateResult
+	socketPath string
+	client     *http.Client
 }
 
-type CheckResult struct {
-	CurrentVersion string     `json:"currentVersion"`
-	CurrentCommit  string     `json:"currentCommit"`
-	LatestVersion  string     `json:"latestVersion"`
-	LatestCommit   string     `json:"latestCommit"`
-	HasUpdate      bool       `json:"hasUpdate"`
-	CheckedAt      *time.Time `json:"checkedAt,omitempty"`
-	Message        string     `json:"message"`
-	Enabled        bool       `json:"enabled"`
-	Updating       bool       `json:"updating"`
+type Health struct {
+	Status string `json:"status"`
 }
 
-type UpdateResult struct {
-	StartedAt time.Time  `json:"startedAt"`
-	EndedAt   *time.Time `json:"endedAt,omitempty"`
-	Version   string     `json:"version"`
-	Status    string     `json:"status"`
-	Message   string     `json:"message"`
-	Progress  int        `json:"progress"`
+type Status struct {
+	Current   updater.InstalledRelease `json:"current"`
+	Operation *updater.Operation       `json:"operation"`
 }
 
-func NewService(cfg config.Config, logger *zap.Logger) *Service {
-	return &Service{cfg: cfg, logger: logger}
+type OperationEvent struct {
+	Revision   uint64        `json:"revision"`
+	Previous   updater.State `json:"previous,omitempty"`
+	State      updater.State `json:"state"`
+	RecordedAt time.Time     `json:"recorded_at"`
+	Error      string        `json:"error,omitempty"`
 }
 
-func (s *Service) Status(ctx context.Context) (CheckResult, *UpdateResult, error) {
-	current, commit := s.localVersion(ctx)
-	fileUpdate := s.readUpdateState()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if fileUpdate != nil && fileUpdate.Status == "running" && !updaterContainerRunning(ctx, s.cfg.Update.Project) {
-		endedAt := time.Now().UTC()
-		fileUpdate.EndedAt = &endedAt
-		fileUpdate.Status = "error"
-		fileUpdate.Message = "更新进程已停止，请查看 Docker 日志"
-		if logs := updaterContainerLogs(ctx, s.cfg.Update.Project); logs != "" {
-			fileUpdate.Message = trimOutput("更新进程已停止\n" + logs)
-		}
-		fileUpdate.Progress = 0
-		s.writeUpdateState(*fileUpdate)
-	}
-	if fileUpdate != nil {
-		s.update = fileUpdate
-		s.updating = fileUpdate.Status == "running" || fileUpdate.Status == "restarting"
-	}
-
-	result := CheckResult{
-		CurrentVersion: current,
-		CurrentCommit:  commit,
-		Enabled:        s.cfg.Update.Enabled,
-		Updating:       s.updating,
-	}
-	if s.check != nil {
-		result.LatestVersion = s.check.LatestVersion
-		result.LatestCommit = s.check.LatestCommit
-		result.HasUpdate = s.check.HasUpdate
-		result.CheckedAt = s.check.CheckedAt
-		result.Message = s.check.Message
-	}
-	return result, s.update, nil
+type APIError struct {
+	StatusCode int
+	Code       string
+	Message    string
 }
 
-func (s *Service) Check(ctx context.Context) (CheckResult, error) {
-	if !s.cfg.Update.Enabled {
-		return CheckResult{Enabled: false, Message: ErrUpdateDisabled.Error()}, ErrUpdateDisabled
+func (e *APIError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("updater request failed with status %d (%s)", e.StatusCode, e.Code)
 	}
-	if !s.isGitRepo(ctx) {
-		return CheckResult{Enabled: true, Message: ErrNotGitRepo.Error()}, ErrNotGitRepo
-	}
+	return fmt.Sprintf("updater request failed with status %d (%s): %s", e.StatusCode, e.Code, e.Message)
+}
 
-	current, commit := s.localVersion(ctx)
-	if err := s.git(ctx, "fetch", "--tags", "--force", s.cfg.Update.Remote); err != nil {
-		return CheckResult{}, err
-	}
-	tagsRaw, err := s.gitOutput(ctx, "tag", "--list")
-	if err != nil {
-		return CheckResult{}, err
-	}
-	latest := latestTag(strings.Fields(tagsRaw))
-	latestCommit := ""
-	hasUpdate := false
-	if latest != "" {
-		latestCommit, err = s.gitOutput(ctx, "rev-list", "-n", "1", latest)
-		if err != nil {
-			return CheckResult{}, err
-		}
-		latestCommit = strings.TrimSpace(latestCommit)
-		_, err := s.gitOutput(ctx, "merge-base", "--is-ancestor", latestCommit, "HEAD")
-		if err != nil {
-			hasUpdate = true
+func NewService(socketPath string, client *http.Client) *Service {
+	socketPath = strings.TrimSpace(socketPath)
+	if client == nil {
+		dialer := &net.Dialer{Timeout: unixConnectTimeout}
+		client = &http.Client{
+			Transport: &http.Transport{
+				DisableCompression: true,
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return dialer.DialContext(ctx, "unix", socketPath)
+				},
+			},
 		}
 	}
-	result := CheckResult{
-		CurrentVersion: current,
-		CurrentCommit:  commit,
-		LatestVersion:  latest,
-		LatestCommit:   shortCommit(latestCommit),
-		HasUpdate:      hasUpdate,
-		Enabled:        true,
-	}
-	checkedAt := time.Now().UTC()
-	result.CheckedAt = &checkedAt
-	if latest == "" {
-		result.Message = "没有找到可用 tag"
-	} else if result.HasUpdate {
-		result.Message = "发现新版本"
-	} else {
-		result.Message = "当前已是最新版本"
-	}
-
-	s.mu.Lock()
-	result.Updating = s.updating
-	s.check = &result
-	if !result.HasUpdate && !s.updating {
-		s.update = nil
-		s.clearUpdateState()
-	}
-	s.mu.Unlock()
-
-	return result, nil
+	return &Service{socketPath: socketPath, client: client}
 }
 
-func (s *Service) Update(ctx context.Context) (UpdateResult, error) {
-	if !s.cfg.Update.Enabled {
-		return UpdateResult{}, ErrUpdateDisabled
-	}
-
-	check, err := s.Check(ctx)
-	if err != nil {
-		return UpdateResult{}, err
-	}
-	if !check.HasUpdate {
-		return UpdateResult{}, ErrNoNewVersion
-	}
-
-	s.mu.Lock()
-	if s.updating || updaterContainerRunning(ctx, s.cfg.Update.Project) {
-		s.mu.Unlock()
-		return UpdateResult{}, ErrUpdateRunning
-	}
-	result := UpdateResult{
-		StartedAt: time.Now().UTC(),
-		Version:   check.LatestVersion,
-		Status:    "running",
-		Message:   "正在准备更新",
-		Progress:  5,
-	}
-	s.updating = true
-	s.update = &result
-	s.mu.Unlock()
-	s.writeUpdateState(result)
-
-	if err := s.startUpdater(ctx, check.LatestVersion); err != nil {
-		endedAt := time.Now().UTC()
-		result.EndedAt = &endedAt
-		result.Status = "error"
-		result.Message = trimOutput(err.Error())
-		result.Progress = 0
-		s.mu.Lock()
-		s.updating = false
-		s.update = &result
-		s.mu.Unlock()
-		s.writeUpdateState(result)
-		return UpdateResult{}, err
-	}
-
-	return result, nil
-}
-
-func (s *Service) Restart(ctx context.Context) (UpdateResult, error) {
-	fileUpdate := s.readUpdateState()
-	if fileUpdate == nil || fileUpdate.Status != "ready" {
-		return UpdateResult{}, ErrUpdateNotReady
-	}
-
-	result := *fileUpdate
-	result.Status = "restarting"
-	result.Message = "正在重启服务"
-	result.Progress = 95
-	s.writeUpdateState(result)
-
-	output, err := s.shell(ctx, "docker compose --env-file .env up -d --no-build")
-	endedAt := time.Now().UTC()
-	result.EndedAt = &endedAt
-	if err != nil {
-		result.Status = "error"
-		result.Message = trimOutput(err.Error() + "\n" + output)
-		result.Progress = 0
-	} else {
-		result.Status = "success"
-		result.Message = "更新完成"
-		result.Progress = 100
-	}
-	s.writeUpdateState(result)
-
-	s.mu.Lock()
-	s.updating = false
-	s.update = &result
-	s.mu.Unlock()
-
+func (s *Service) Health(ctx context.Context) (Health, error) {
+	var result Health
+	err := s.request(ctx, healthTimeout, http.MethodGet, "/healthz", nil, &result)
 	return result, err
 }
 
-func (s *Service) startUpdater(ctx context.Context, version string) error {
-	statusPath := filepath.Join(s.cfg.Update.WorkDir, ".ovdash-update-status.json")
-	script := updaterScript(
-		s.cfg.Update.Remote,
-		version,
-		statusPath,
-		s.cfg.Update.BackendImageRepository,
-		s.cfg.Update.FrontendImageRepository,
-		s.cfg.Update.FallbackBuild,
-	)
-	_, _ = s.command(ctx, "", "docker", "rm", "-f", updaterName(s.cfg.Update.Project))
-	args := []string{
-		"run",
-		"--detach",
-		"--user",
-		"0:0",
-		"--name",
-		updaterName(s.cfg.Update.Project),
-		"--env",
-		"HTTP_PROXY",
-		"--env",
-		"HTTPS_PROXY",
-		"--env",
-		"ALL_PROXY",
-		"--env",
-		"NO_PROXY",
-		"-v",
-		s.cfg.Update.WorkDir + ":" + s.cfg.Update.WorkDir,
-		"-v",
-		"/root/.netrc:/root/.netrc:ro",
-		"-v",
-		"/var/run/docker.sock:/var/run/docker.sock",
-		"-w",
-		s.cfg.Update.WorkDir,
-		s.cfg.Update.Image,
-		"sh",
-		"-c",
-		script,
+func (s *Service) Status(ctx context.Context) (Status, error) {
+	var result Status
+	err := s.request(ctx, statusTimeout, http.MethodGet, "/v1/status", nil, &result)
+	return result, err
+}
+
+func (s *Service) Check(ctx context.Context) (updater.CheckResult, error) {
+	var result updater.CheckResult
+	err := s.request(ctx, checkTimeout, http.MethodPost, "/v1/check", nil, &result)
+	return result, err
+}
+
+func (s *Service) Apply(ctx context.Context, releaseID string) (updater.Operation, error) {
+	if err := updater.ValidateReleaseID(releaseID); err != nil {
+		return updater.Operation{}, fmt.Errorf("invalid release_id: %w", err)
 	}
-	if _, err := s.command(ctx, "", "docker", args...); err != nil {
+	request := struct {
+		ReleaseID string `json:"release_id"`
+	}{ReleaseID: releaseID}
+	var result updater.Operation
+	err := s.request(ctx, applyTimeout, http.MethodPost, "/v1/operations", request, &result)
+	return result, err
+}
+
+func (s *Service) Operation(ctx context.Context, operationID string) (updater.Operation, error) {
+	if !operationIDPattern.MatchString(operationID) {
+		return updater.Operation{}, ErrInvalidOperation
+	}
+	var result updater.Operation
+	err := s.request(ctx, operationTimeout, http.MethodGet, "/v1/operations/"+operationID, nil, &result)
+	return result, err
+}
+
+func (s *Service) OperationEvents(ctx context.Context, operationID string) ([]OperationEvent, error) {
+	if !operationIDPattern.MatchString(operationID) {
+		return nil, ErrInvalidOperation
+	}
+	var response struct {
+		Items []OperationEvent `json:"items"`
+	}
+	err := s.request(ctx, operationTimeout, http.MethodGet, "/v1/operations/"+operationID+"/events", nil, &response)
+	return response.Items, err
+}
+
+func (s *Service) request(ctx context.Context, timeout time.Duration, method, path string, body any, result any) error {
+	if s == nil || strings.TrimSpace(s.socketPath) == "" {
+		return ErrInvalidSocketPath
+	}
+	if s.client == nil {
+		return errors.New("updater HTTP client is required")
+	}
+
+	requestContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var requestBody io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("encode updater request: %w", err)
+		}
+		requestBody = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(requestContext, method, updaterBaseURL+path, requestBody)
+	if err != nil {
+		return fmt.Errorf("create updater request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+
+	response, err := s.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("call updater: %w", err)
+	}
+	defer response.Body.Close()
+
+	data, err := readResponse(response.Body)
+	if err != nil {
 		return err
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return decodeAPIError(response.StatusCode, data)
+	}
+	if err := decodeStrictJSON(data, result); err != nil {
+		return fmt.Errorf("decode updater response: %w", err)
 	}
 	return nil
 }
 
-func updaterScript(remote string, version string, statusPath string, backendImageRepository string, frontendImageRepository string, fallbackBuild bool) string {
-	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	fallback := "false"
-	if fallbackBuild {
-		fallback = "true"
-	}
-	return fmt.Sprintf(`set -eu
-write_status() {
-  status="$1"
-  message="$2"
-  progress="$3"
-  ended=""
-  if [ "$status" != "running" ]; then ended=", \"endedAt\": \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ\")\""; fi
-  printf '{"startedAt":"%s"%%s,"version":"%s","status":"%%s","message":"%%s","progress":%%s}\n' "$ended" "$status" "$(printf '%%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')" "$progress" > %s
-}
-set_env() {
-  key="$1"
-  value="$2"
-  tmp="$(mktemp)"
-  if [ -f .env ]; then
-    grep -v "^${key}=" .env > "$tmp" || true
-  fi
-  printf '%%s=%%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" .env
-}
-
-backend_image="%s:%s"
-frontend_image="%s:%s"
-
-write_status running 正在拉取版本 20
-if ! git fetch --tags --force %s || ! git checkout --force %s || ! git reset --hard %s; then
-  write_status error 更新失败 0
-  exit 1
-fi
-
-set_env APP_VERSION %s
-set_env BACKEND_IMAGE "$backend_image"
-set_env FRONTEND_IMAGE "$frontend_image"
-set_env UPDATE_IMAGE "$backend_image"
-
-write_status running 正在拉取镜像 55
-if docker compose --env-file .env pull api worker frontend; then
-  write_status ready 更新已准备完成 90
-  exit 0
-fi
-
-if [ %s = true ]; then
-  write_status running 镜像拉取失败，正在本机构建 65
-  if docker compose -f docker-compose.yml -f docker-compose.build.yml --env-file .env build api worker frontend; then
-    write_status ready 更新已准备完成 90
-    exit 0
-  fi
-fi
-
-write_status error 镜像拉取失败 0
-exit 1`,
-		startedAt,
-		jsonEscape(version),
-		shellQuote(statusPath),
-		jsonEscape(backendImageRepository),
-		jsonEscape(version),
-		jsonEscape(frontendImageRepository),
-		jsonEscape(version),
-		shellQuote(remote),
-		shellQuote(version),
-		shellQuote(version),
-		shellQuote(version),
-		fallback,
-	)
-}
-
-func (s *Service) localVersion(ctx context.Context) (string, string) {
-	version := strings.TrimSpace(s.cfg.App.Version)
-	commit, err := s.gitOutput(ctx, "rev-parse", "--short", "HEAD")
+func readResponse(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxResponseBytes+1))
 	if err != nil {
-		commit = ""
+		return nil, fmt.Errorf("read updater response: %w", err)
 	}
-	commit = strings.TrimSpace(commit)
-	if version == "" || version == "local" || version == "latest" {
-		if tag, err := s.gitOutput(ctx, "describe", "--tags", "--exact-match"); err == nil {
-			version = strings.TrimSpace(tag)
+	if len(data) > maxResponseBytes {
+		return nil, ErrResponseTooLarge
+	}
+	return data, nil
+}
+
+func decodeAPIError(statusCode int, data []byte) error {
+	var response struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := decodeStrictJSON(data, &response); err != nil || response.Error.Code == "" {
+		return fmt.Errorf("updater returned malformed error response with status %d", statusCode)
+	}
+	return &APIError{
+		StatusCode: statusCode,
+		Code:       response.Error.Code,
+		Message:    response.Error.Message,
+	}
+}
+
+func decodeStrictJSON(data []byte, destination any) error {
+	if len(data) == 0 {
+		return errors.New("empty response body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values in response")
 		}
+		return err
 	}
-	if version == "" {
-		version = "local"
-	}
-	return version, commit
-}
-
-func (s *Service) readUpdateState() *UpdateResult {
-	path := filepath.Join(s.cfg.Update.WorkDir, ".ovdash-update-status.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var result UpdateResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		s.logger.Warn("read update state", zap.Error(err))
-		return nil
-	}
-	return &result
-}
-
-func (s *Service) writeUpdateState(result UpdateResult) {
-	path := filepath.Join(s.cfg.Update.WorkDir, ".ovdash-update-status.json")
-	data, err := json.Marshal(result)
-	if err != nil {
-		s.logger.Warn("encode update state", zap.Error(err))
-		return
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		s.logger.Warn("write update state", zap.Error(err))
-	}
-}
-
-func (s *Service) clearUpdateState() {
-	path := filepath.Join(s.cfg.Update.WorkDir, ".ovdash-update-status.json")
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		s.logger.Warn("clear update state", zap.Error(err))
-	}
-}
-
-func (s *Service) git(ctx context.Context, args ...string) error {
-	_, err := s.command(ctx, s.cfg.Update.WorkDir, "git", args...)
-	return err
-}
-
-func (s *Service) gitOutput(ctx context.Context, args ...string) (string, error) {
-	return s.command(ctx, s.cfg.Update.WorkDir, "git", args...)
-}
-
-func (s *Service) shell(ctx context.Context, command string) (string, error) {
-	return s.command(ctx, s.cfg.Update.WorkDir, "sh", "-c", command)
-}
-
-func (s *Service) isGitRepo(ctx context.Context) bool {
-	output, err := s.gitOutput(ctx, "rev-parse", "--is-inside-work-tree")
-	return err == nil && strings.TrimSpace(output) == "true"
-}
-
-func (s *Service) command(ctx context.Context, dir string, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	output := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-	if err != nil {
-		return trimOutput(output), fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, trimOutput(output))
-	}
-	return strings.TrimSpace(stdout.String()), nil
-}
-
-func updaterContainerRunning(ctx context.Context, project string) bool {
-	name := updaterName(project)
-	cmd := exec.CommandContext(ctx, "docker", "ps", "--filter", "name=^/"+name+"$", "--format", "{{.Names}}")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return strings.TrimSpace(stdout.String()) == name
-}
-
-func updaterContainerLogs(ctx context.Context, project string) string {
-	name := updaterName(project)
-	cmd := exec.CommandContext(ctx, "docker", "logs", "--tail", "120", name)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-}
-
-func shortCommit(commit string) string {
-	commit = strings.TrimSpace(commit)
-	if len(commit) > 12 {
-		return commit[:12]
-	}
-	return commit
-}
-
-func updaterName(project string) string {
-	project = strings.TrimSpace(project)
-	if project == "" {
-		project = "ov-dash"
-	}
-	project = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			return r
-		}
-		return '-'
-	}, project)
-	return project + "-updater"
-}
-
-var tagPartPattern = regexp.MustCompile(`\d+|[A-Za-z]+`)
-
-func latestTag(tags []string) string {
-	values := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		tag = strings.TrimSpace(tag)
-		if tag != "" {
-			values = append(values, tag)
-		}
-	}
-	sort.Slice(values, func(i, j int) bool {
-		return compareTags(values[i], values[j]) < 0
-	})
-	if len(values) == 0 {
-		return ""
-	}
-	return values[len(values)-1]
-}
-
-func compareTags(a string, b string) int {
-	ap := tagParts(a)
-	bp := tagParts(b)
-	for i := 0; i < len(ap) || i < len(bp); i++ {
-		if i >= len(ap) {
-			return -1
-		}
-		if i >= len(bp) {
-			return 1
-		}
-		if ap[i].num && bp[i].num {
-			if ap[i].number < bp[i].number {
-				return -1
-			}
-			if ap[i].number > bp[i].number {
-				return 1
-			}
-			continue
-		}
-		if ap[i].value < bp[i].value {
-			return -1
-		}
-		if ap[i].value > bp[i].value {
-			return 1
-		}
-	}
-	return strings.Compare(a, b)
-}
-
-type tagPart struct {
-	value  string
-	number int
-	num    bool
-}
-
-func tagParts(tag string) []tagPart {
-	raw := tagPartPattern.FindAllString(strings.TrimPrefix(tag, "v"), -1)
-	parts := make([]tagPart, 0, len(raw))
-	for _, value := range raw {
-		if number, err := strconv.Atoi(value); err == nil {
-			parts = append(parts, tagPart{value: value, number: number, num: true})
-			continue
-		}
-		parts = append(parts, tagPart{value: strings.ToLower(value)})
-	}
-	return parts
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-}
-
-func jsonEscape(value string) string {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return value
-	}
-	return strings.Trim(string(data), `"`)
-}
-
-func trimOutput(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) > 1200 {
-		return value[:1200]
-	}
-	return value
+	return nil
 }

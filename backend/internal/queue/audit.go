@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"ov-dash/backend/internal/db"
+	"ov-dash/backend/internal/events"
 	"ov-dash/backend/internal/platform/redact"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -22,6 +25,8 @@ const (
 	JobStatusDead      = "dead"
 	JobStatusCanceled  = "canceled"
 )
+
+var ErrJobStateConflict = errors.New("job state transition conflict")
 
 type JobRecord struct {
 	ID                string         `json:"id"`
@@ -42,6 +47,7 @@ type JobRecord struct {
 	CanceledAt        *time.Time     `json:"canceled_at,omitempty"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
+	RiverJobID        int64          `json:"-"`
 }
 
 type JobListFilter struct {
@@ -71,6 +77,7 @@ type JobEvent struct {
 type WorkerHeartbeat struct {
 	ID         string    `json:"id"`
 	QueueName  string    `json:"queue_name"`
+	ReleaseID  string    `json:"release_id"`
 	Hostname   string    `json:"hostname"`
 	PID        int       `json:"pid"`
 	StartedAt  time.Time `json:"started_at"`
@@ -78,14 +85,22 @@ type WorkerHeartbeat struct {
 }
 
 type PostgresAuditStore struct {
-	db *db.Pool
+	db     auditDB
+	begin  func(context.Context) (pgx.Tx, error)
+	outbox *events.Outbox
+}
+
+type auditDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func NewPostgresAuditStore(db *db.Pool) *PostgresAuditStore {
-	return &PostgresAuditStore{db: db}
+	return &PostgresAuditStore{db: db, begin: db.Begin, outbox: events.NewOutbox(db)}
 }
 
-func (s *PostgresAuditStore) RecordJobEnqueued(ctx context.Context, queueName string, job Job) error {
+func (s *PostgresAuditStore) RecordJobEnqueuedTx(ctx context.Context, tx pgx.Tx, queueName string, job Job) error {
 	job.Normalize()
 	payload, err := json.Marshal(job.Payload)
 	if err != nil {
@@ -101,7 +116,7 @@ func (s *PostgresAuditStore) RecordJobEnqueued(ctx context.Context, queueName st
 		return err
 	}
 
-	_, err = s.db.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		WITH upsert AS (
 			INSERT INTO jobs_audit (
 				id, queue_name, job_type, payload, status, attempts, max_attempts,
@@ -131,6 +146,16 @@ func (s *PostgresAuditStore) RecordJobEnqueued(ctx context.Context, queueName st
 	return err
 }
 
+func (s *PostgresAuditStore) LinkRiverJobTx(ctx context.Context, tx pgx.Tx, jobID string, riverJobID int64) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE jobs_audit
+		SET river_job_id = $2,
+		    updated_at = now()
+		WHERE id = $1
+	`, jobID, riverJobID)
+	return err
+}
+
 func (s *PostgresAuditStore) RecordJobRunning(ctx context.Context, queueName string, job Job) error {
 	job.Normalize()
 	payload, err := json.Marshal(job.Payload)
@@ -146,31 +171,37 @@ func (s *PostgresAuditStore) RecordJobRunning(ctx context.Context, queueName str
 		return err
 	}
 
-	_, err = s.db.Exec(ctx, `
-		WITH upsert AS (
-			INSERT INTO jobs_audit (
-				id, queue_name, job_type, payload, status, attempts, max_attempts,
-				idempotency_key, last_error, next_run_at, started_at, updated_at
+	return s.withTransaction(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			WITH upsert AS (
+				INSERT INTO jobs_audit (
+					id, queue_name, job_type, payload, status, attempts, max_attempts,
+					idempotency_key, last_error, next_run_at, started_at, updated_at
+				)
+				VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, '', NULL, now(), now())
+				ON CONFLICT (id) DO UPDATE SET
+					queue_name = EXCLUDED.queue_name,
+					job_type = EXCLUDED.job_type,
+					payload = EXCLUDED.payload,
+					status = EXCLUDED.status,
+					attempts = EXCLUDED.attempts,
+					max_attempts = EXCLUDED.max_attempts,
+					idempotency_key = EXCLUDED.idempotency_key,
+					next_run_at = NULL,
+					started_at = now(),
+					updated_at = now()
+				WHERE jobs_audit.status NOT IN ($10, $11, $12)
+				RETURNING id
 			)
-			VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, '', NULL, now(), now())
-			ON CONFLICT (id) DO UPDATE SET
-				queue_name = EXCLUDED.queue_name,
-				job_type = EXCLUDED.job_type,
-				payload = EXCLUDED.payload,
-				status = EXCLUDED.status,
-				attempts = EXCLUDED.attempts,
-				max_attempts = EXCLUDED.max_attempts,
-				idempotency_key = EXCLUDED.idempotency_key,
-				next_run_at = NULL,
-				started_at = now(),
-				updated_at = now()
-			RETURNING id
-		)
-		INSERT INTO job_audit_events (job_id, event_type, metadata)
-		SELECT id, 'started', $9::jsonb
-		FROM upsert
-	`, job.ID, queueName, job.Type, string(payload), JobStatusRunning, job.Attempts, job.MaxAttempts, job.IdempotencyKey, metadata)
-	return err
+			INSERT INTO job_audit_events (job_id, event_type, metadata)
+			SELECT id, 'started', $9::jsonb
+			FROM upsert
+		`, job.ID, queueName, job.Type, string(payload), JobStatusRunning, job.Attempts, job.MaxAttempts, job.IdempotencyKey, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
+		if err := jobTransitionResult(tag, err, job.ID, JobStatusRunning); err != nil {
+			return err
+		}
+		return s.appendJobOutbox(ctx, tx, "job.started", jobLifecyclePayload(queueName, job, nil))
+	})
 }
 
 func (s *PostgresAuditStore) RecordJobCompleted(ctx context.Context, queueName string, job Job) error {
@@ -182,24 +213,30 @@ func (s *PostgresAuditStore) RecordJobCompleted(ctx context.Context, queueName s
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `
-		WITH updated AS (
-			UPDATE jobs_audit
-			SET status = $2,
-			    attempts = $3,
-			    max_attempts = $4,
-			    last_error = '',
-			    next_run_at = NULL,
-			    completed_at = now(),
-			    updated_at = now()
-			WHERE id = $1
-			RETURNING id
-		)
-		INSERT INTO job_audit_events (job_id, event_type, metadata)
-		SELECT id, 'completed', $5::jsonb
-		FROM updated
-	`, job.ID, JobStatusCompleted, job.Attempts, job.MaxAttempts, metadata)
-	return err
+	return s.withTransaction(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			WITH updated AS (
+				UPDATE jobs_audit
+				SET status = $2,
+				    attempts = $3,
+				    max_attempts = $4,
+				    last_error = '',
+				    next_run_at = NULL,
+				    completed_at = now(),
+				    updated_at = now()
+				WHERE id = $1
+				  AND status NOT IN ($6, $7, $8)
+				RETURNING id
+			)
+			INSERT INTO job_audit_events (job_id, event_type, metadata)
+			SELECT id, 'completed', $5::jsonb
+			FROM updated
+		`, job.ID, JobStatusCompleted, job.Attempts, job.MaxAttempts, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
+		if err := jobTransitionResult(tag, err, job.ID, JobStatusCompleted); err != nil {
+			return err
+		}
+		return s.appendJobOutbox(ctx, tx, "job.completed", jobLifecyclePayload(queueName, job, nil))
+	})
 }
 
 func (s *PostgresAuditStore) RecordJobFailed(ctx context.Context, queueName string, job Job, message string, nextRunAt *time.Time) error {
@@ -221,24 +258,32 @@ func (s *PostgresAuditStore) RecordJobFailed(ctx context.Context, queueName stri
 		return err
 	}
 
-	_, err = s.db.Exec(ctx, `
-		WITH updated AS (
-			UPDATE jobs_audit
-			SET status = $2,
-			    attempts = $3,
-			    max_attempts = $4,
-			    last_error = $5,
-			    next_run_at = $6,
-			    updated_at = now()
-			WHERE id = $1
-			  AND status NOT IN ($9, $10, $11)
-			RETURNING id
-		)
-		INSERT INTO job_audit_events (job_id, event_type, message, metadata)
-		SELECT id, $7, $5, $8::jsonb
-		FROM updated
-	`, job.ID, status, job.Attempts, job.MaxAttempts, message, nextRunAt, eventType, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
-	return err
+	return s.withTransaction(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			WITH updated AS (
+				UPDATE jobs_audit
+				SET status = $2,
+				    attempts = $3,
+				    max_attempts = $4,
+				    last_error = $5,
+				    next_run_at = $6,
+				    updated_at = now()
+				WHERE id = $1
+				  AND status NOT IN ($9, $10, $11)
+				RETURNING id
+			)
+			INSERT INTO job_audit_events (job_id, event_type, message, metadata)
+			SELECT id, $7, $5, $8::jsonb
+			FROM updated
+		`, job.ID, status, job.Attempts, job.MaxAttempts, message, nextRunAt, eventType, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
+		if err := jobTransitionResult(tag, err, job.ID, status); err != nil {
+			return err
+		}
+		return s.appendJobOutbox(ctx, tx, "job.failed", jobLifecyclePayload(queueName, job, map[string]any{
+			"error":       message,
+			"next_run_at": nextRunAt,
+		}))
+	})
 }
 
 func (s *PostgresAuditStore) RecordJobDead(ctx context.Context, queueName string, job Job, message string) error {
@@ -252,25 +297,34 @@ func (s *PostgresAuditStore) RecordJobDead(ctx context.Context, queueName string
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `
-		WITH updated AS (
-			UPDATE jobs_audit
-			SET status = $2,
-			    attempts = $3,
-			    max_attempts = $4,
-			    last_error = $5,
-			    next_run_at = NULL,
-			    dead_at = now(),
-			    updated_at = now()
-			WHERE id = $1
-			  AND status NOT IN ($7, $8, $9)
-			RETURNING id
-		)
-		INSERT INTO job_audit_events (job_id, event_type, message, metadata)
-		SELECT id, 'dead', $5, $6::jsonb
-		FROM updated
-	`, job.ID, JobStatusDead, job.Attempts, job.MaxAttempts, message, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
-	return err
+	return s.withTransaction(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			WITH updated AS (
+				UPDATE jobs_audit
+				SET status = $2,
+				    attempts = $3,
+				    max_attempts = $4,
+				    last_error = $5,
+				    next_run_at = NULL,
+				    dead_at = now(),
+				    updated_at = now()
+				WHERE id = $1
+				  AND status NOT IN ($7, $8, $9)
+				RETURNING id
+			)
+			INSERT INTO job_audit_events (job_id, event_type, message, metadata)
+			SELECT id, 'dead', $5, $6::jsonb
+			FROM updated
+		`, job.ID, JobStatusDead, job.Attempts, job.MaxAttempts, message, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
+		if err := jobTransitionResult(tag, err, job.ID, JobStatusDead); err != nil {
+			return err
+		}
+		payload := jobLifecyclePayload(queueName, job, map[string]any{"error": message})
+		if err := s.appendJobOutbox(ctx, tx, "job.failed", payload); err != nil {
+			return err
+		}
+		return s.appendJobOutbox(ctx, tx, "job.dead", payload)
+	})
 }
 
 func (s *PostgresAuditStore) RecordJobCanceled(ctx context.Context, queueName string, job Job, message string) error {
@@ -284,40 +338,32 @@ func (s *PostgresAuditStore) RecordJobCanceled(ctx context.Context, queueName st
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `
-		WITH updated AS (
-			UPDATE jobs_audit
-			SET status = $2,
-			    attempts = $3,
-			    max_attempts = $4,
-			    last_error = $5,
-			    next_run_at = NULL,
-			    canceled_at = now(),
-			    updated_at = now()
-			WHERE id = $1
-			  AND status NOT IN ($7, $8, $9)
-			RETURNING id
-		)
-		INSERT INTO job_audit_events (job_id, event_type, message, metadata)
-		SELECT id, 'canceled', $5, $6::jsonb
-		FROM updated
-	`, job.ID, JobStatusCanceled, job.Attempts, job.MaxAttempts, message, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
-	return err
-}
-
-func (s *PostgresAuditStore) RecordJobRequeued(ctx context.Context, queueName string, oldJob JobRecord, newJob Job) error {
-	newJob.Normalize()
-	metadataJSON, err := redactedMetadataJSON(requeueMetadata(queueName, oldJob, newJob))
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(ctx, `
-		INSERT INTO job_audit_events (job_id, event_type, message, metadata)
-		VALUES
-			($1, 'requeued', 'job requeued', $2::jsonb),
-			($3, 'requeued_from', 'job requeued from previous job', $2::jsonb)
-	`, oldJob.ID, metadataJSON, newJob.ID)
-	return err
+	return s.withTransaction(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			WITH updated AS (
+				UPDATE jobs_audit
+				SET status = $2,
+				    attempts = $3,
+				    max_attempts = $4,
+				    last_error = $5,
+				    next_run_at = NULL,
+				    canceled_at = now(),
+				    updated_at = now()
+				WHERE id = $1
+				  AND status NOT IN ($7, $8, $9)
+				RETURNING id
+			)
+			INSERT INTO job_audit_events (job_id, event_type, message, metadata)
+			SELECT id, 'canceled', $5, $6::jsonb
+			FROM updated
+		`, job.ID, JobStatusCanceled, job.Attempts, job.MaxAttempts, message, metadata, JobStatusCompleted, JobStatusDead, JobStatusCanceled)
+		if err := jobTransitionResult(tag, err, job.ID, JobStatusCanceled); err != nil {
+			return err
+		}
+		return s.appendJobOutbox(ctx, tx, "job.canceled", jobLifecyclePayload(queueName, job, map[string]any{
+			"message": message,
+		}))
+	})
 }
 
 func (s *PostgresAuditStore) ListJobs(ctx context.Context, limit int) ([]JobRecord, error) {
@@ -327,7 +373,7 @@ func (s *PostgresAuditStore) ListJobs(ctx context.Context, limit int) ([]JobReco
 	rows, err := s.db.Query(ctx, `
 		SELECT id::text, queue_name, job_type, payload, idempotency_key, status, attempts, max_attempts,
 		       last_error, cancel_requested, cancel_requested_at, next_run_at, started_at,
-		       completed_at, dead_at, canceled_at, created_at, updated_at
+		       completed_at, dead_at, canceled_at, created_at, updated_at, COALESCE(river_job_id, 0)
 		FROM jobs_audit
 		ORDER BY created_at DESC
 		LIMIT $1
@@ -353,7 +399,7 @@ func (s *PostgresAuditStore) ListJobsFiltered(ctx context.Context, filter JobLis
 	rows, err := s.db.Query(ctx, `
 		SELECT id::text, queue_name, job_type, payload, idempotency_key, status, attempts, max_attempts,
 		       last_error, cancel_requested, cancel_requested_at, next_run_at, started_at,
-		       completed_at, dead_at, canceled_at, created_at, updated_at
+		       completed_at, dead_at, canceled_at, created_at, updated_at, COALESCE(river_job_id, 0)
 		FROM jobs_audit
 		WHERE (COALESCE(array_length($1::text[], 1), 0) = 0 OR job_type = ANY($1::text[]))
 		  AND ($2 = '' OR payload->>'server_id' = $2)
@@ -380,7 +426,7 @@ func (s *PostgresAuditStore) GetJob(ctx context.Context, id string) (JobRecord, 
 	return scanJobRecord(s.db.QueryRow(ctx, `
 		SELECT id::text, queue_name, job_type, payload, idempotency_key, status, attempts, max_attempts,
 		       last_error, cancel_requested, cancel_requested_at, next_run_at, started_at,
-		       completed_at, dead_at, canceled_at, created_at, updated_at
+		       completed_at, dead_at, canceled_at, created_at, updated_at, COALESCE(river_job_id, 0)
 		FROM jobs_audit
 		WHERE id = $1
 	`, id))
@@ -466,28 +512,6 @@ func (s *PostgresAuditStore) ListJobLogs(ctx context.Context, id string) ([]JobL
 	return items, rows.Err()
 }
 
-func (s *PostgresAuditStore) RequestJobCancel(ctx context.Context, id string) error {
-	metadata, err := redactedMetadataJSON(nil)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(ctx, `
-		WITH updated AS (
-			UPDATE jobs_audit
-			SET cancel_requested = true,
-			    cancel_requested_at = COALESCE(cancel_requested_at, now()),
-			    updated_at = now()
-			WHERE id = $1
-			  AND status NOT IN ($2, $3, $4)
-			RETURNING id
-		)
-		INSERT INTO job_audit_events (job_id, event_type, message, metadata)
-		SELECT id, 'cancel_requested', '', $5::jsonb
-		FROM updated
-	`, id, JobStatusCompleted, JobStatusDead, JobStatusCanceled, metadata)
-	return err
-}
-
 func (s *PostgresAuditStore) IsJobCancelRequested(ctx context.Context, id string) (bool, error) {
 	var requested bool
 	err := s.db.QueryRow(ctx, `
@@ -498,16 +522,21 @@ func (s *PostgresAuditStore) IsJobCancelRequested(ctx context.Context, id string
 	return requested, err
 }
 
-func (s *PostgresAuditStore) RecordWorkerHeartbeat(ctx context.Context, id string, queueName string, hostname string, pid int) error {
+func (s *PostgresAuditStore) RecordWorkerHeartbeat(ctx context.Context, id string, queueName string, releaseID string, hostname string, pid int) error {
+	releaseID = NormalizeReleaseID(releaseID)
+	if releaseID == "" {
+		return errors.New("worker heartbeat release ID is required")
+	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO worker_heartbeats (id, queue_name, hostname, pid, started_at, last_seen_at)
-		VALUES ($1, $2, $3, $4, now(), now())
+		INSERT INTO worker_heartbeats (id, queue_name, release_id, hostname, pid, started_at, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, now(), now())
 		ON CONFLICT (id) DO UPDATE SET
 			queue_name = EXCLUDED.queue_name,
+			release_id = EXCLUDED.release_id,
 			hostname = EXCLUDED.hostname,
 			pid = EXCLUDED.pid,
 			last_seen_at = now()
-	`, id, queueName, hostname, pid)
+	`, id, queueName, releaseID, hostname, pid)
 	return err
 }
 
@@ -516,7 +545,7 @@ func (s *PostgresAuditStore) ListWorkerHeartbeats(ctx context.Context, maxAge ti
 		maxAge = 30 * time.Second
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, queue_name, hostname, pid, started_at, last_seen_at
+		SELECT id, queue_name, release_id, hostname, pid, started_at, last_seen_at
 		FROM worker_heartbeats
 		WHERE last_seen_at >= now() - $1::interval
 		ORDER BY last_seen_at DESC
@@ -529,7 +558,7 @@ func (s *PostgresAuditStore) ListWorkerHeartbeats(ctx context.Context, maxAge ti
 	items := make([]WorkerHeartbeat, 0)
 	for rows.Next() {
 		var item WorkerHeartbeat
-		if err := rows.Scan(&item.ID, &item.QueueName, &item.Hostname, &item.PID, &item.StartedAt, &item.LastSeenAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.QueueName, &item.ReleaseID, &item.Hostname, &item.PID, &item.StartedAt, &item.LastSeenAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -563,6 +592,7 @@ func scanJobRecord(row jobRecordScanner) (JobRecord, error) {
 		&item.CanceledAt,
 		&item.CreatedAt,
 		&item.UpdatedAt,
+		&item.RiverJobID,
 	)
 	if err != nil {
 		return JobRecord{}, err
@@ -596,6 +626,47 @@ func normalizeJobListFilter(filter JobListFilter) JobListFilter {
 		filter.Limit = 50
 	}
 	return filter
+}
+
+func (s *PostgresAuditStore) withTransaction(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresAuditStore) appendJobOutbox(ctx context.Context, tx pgx.Tx, eventType string, payload map[string]any) error {
+	return s.outbox.Append(ctx, tx, events.New(eventType, "queue.jobs", payload))
+}
+
+func jobLifecyclePayload(queueName string, job Job, extra map[string]any) map[string]any {
+	payload := map[string]any{
+		"job_id":       job.ID,
+		"job_type":     job.Type,
+		"queue_name":   queueName,
+		"attempts":     job.Attempts,
+		"max_attempts": job.MaxAttempts,
+	}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	return payload
+}
+
+func jobTransitionResult(tag pgconn.CommandTag, err error, jobID string, targetStatus string) error {
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: job %s cannot transition to %s", ErrJobStateConflict, jobID, targetStatus)
+	}
+	return nil
 }
 
 func isUniqueViolation(err error) bool {

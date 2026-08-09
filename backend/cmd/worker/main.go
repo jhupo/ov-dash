@@ -7,7 +7,7 @@ import (
 	"syscall"
 
 	"ov-dash/backend/internal/config"
-	"ov-dash/backend/internal/platform"
+	platformapp "ov-dash/backend/internal/platform/app"
 	"ov-dash/backend/internal/worker"
 	"ov-dash/backend/pkg/logging"
 
@@ -19,27 +19,17 @@ func main() {
 	defer stop()
 
 	cfg := config.Load()
-	runtime, err := platform.Open(ctx, cfg)
+	application, err := platformapp.OpenWorker(ctx, cfg)
 	if err != nil {
 		logger := logging.New(cfg.App.Env)
 		logger.Fatal("open platform runtime", zap.Error(err))
 	}
-	defer runtime.Close()
-
-	migrationSummary, err := runtime.Migrations.ApplyDir(ctx, cfg.Migrations.Dir)
-	if err != nil {
-		runtime.Logger.Fatal("apply migrations", zap.Error(err))
-	}
-	platform.LogMigrationSummary(runtime.Logger, migrationSummary)
-
-	secretSummary, err := runtime.BackfillLegacySecrets(ctx)
-	if err != nil {
-		runtime.Logger.Fatal("backfill legacy secrets", zap.Error(err))
-	}
-	platform.LogSecretBackfillSummary(runtime.Logger, secretSummary)
+	defer application.Close()
+	runtime := application.Runtime
 
 	runner, err := worker.NewRunner(worker.RunnerDeps{
 		Runtime: runtime,
+		Jobs:    application.Catalog.Jobs(),
 	})
 	if err != nil {
 		runtime.Logger.Fatal("create worker runner", zap.Error(err))

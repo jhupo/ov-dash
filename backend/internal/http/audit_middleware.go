@@ -93,8 +93,6 @@ func auditResourceAction(r *http.Request) (string, string) {
 		action = "ssh"
 	case path == "updates/apply":
 		action = "apply"
-	case path == "updates/restart":
-		action = "restart"
 	case strings.HasSuffix(path, "/cancel"):
 		action = "cancel"
 	case r.Method == http.MethodPost:

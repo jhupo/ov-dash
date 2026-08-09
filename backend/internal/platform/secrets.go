@@ -21,5 +21,8 @@ func LogSecretBackfillSummary(logger *zap.Logger, summary secret.BackfillSummary
 		zap.Int("proxy_passwords", summary.ProxyPasswords),
 		zap.Int("server_passwords", summary.ServerPasswords),
 		zap.Int("server_private_keys", summary.ServerPrivateKeys),
+		zap.Int("telegram_bot_tokens", summary.TelegramBotTokens),
+		zap.Int("telegram_inbound_tokens", summary.TelegramInboundTokens),
+		zap.Int("wiki_resource_passwords", summary.WikiResourcePasswords),
 	)
 }

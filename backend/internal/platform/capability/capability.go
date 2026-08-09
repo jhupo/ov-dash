@@ -3,8 +3,11 @@ package capability
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Capability string
@@ -34,8 +37,6 @@ const (
 	ServersWrite       Capability = "servers:write"
 	ServersDelete      Capability = "servers:delete"
 	ServersSSH         Capability = "servers:ssh"
-
-	UpdatesManage Capability = UpdatesApply
 )
 
 type User struct {
@@ -50,70 +51,46 @@ type Descriptor struct {
 
 type UserResolver func(context.Context) (User, bool)
 
-type RolePolicy struct {
-	grants map[string]map[Capability]struct{}
+type Authorizer interface {
+	Authorize(context.Context, User, Capability) (bool, error)
 }
 
-func DefaultRolePolicy() *RolePolicy {
-	return &RolePolicy{grants: map[string]map[Capability]struct{}{
-		"viewer": capabilities(
-			DashboardRead,
-			PlatformRead,
-			TasksRead,
-			AppsRead,
-			ChatsRead,
-			UsersRead,
-			WikiRead,
-			SettingsRead,
-			ProxyRead,
-			NotificationsRead,
-			UpdatesRead,
-			JobsRead,
-			ServersRead,
-		),
-		"operator": capabilities(
-			DashboardRead,
-			PlatformRead,
-			TasksRead,
-			TasksWrite,
-			AppsRead,
-			ChatsRead,
-			UsersRead,
-			WikiRead,
-			WikiWrite,
-			SettingsRead,
-			ProxyRead,
-			NotificationsRead,
-			UpdatesRead,
-			JobsRead,
-			JobsCreate,
-			JobsManage,
-			ServersRead,
-			ServersWrite,
-			ServersSSH,
-			ProxyWrite,
-			NotificationsWrite,
-		),
-	}}
+type QueryRower interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-func (p *RolePolicy) Allows(role string, capability Capability) bool {
-	role = strings.ToLower(strings.TrimSpace(role))
+type PostgresAuthorizer struct {
+	db QueryRower
+}
+
+func NewPostgresAuthorizer(db QueryRower) *PostgresAuthorizer {
+	return &PostgresAuthorizer{db: db}
+}
+
+func (a *PostgresAuthorizer) Authorize(ctx context.Context, user User, capability Capability) (bool, error) {
+	role := normalizeRole(user.Role)
 	if role == "admin" {
-		return true
+		return true, nil
 	}
-	if p == nil {
-		return false
+	if a == nil || a.db == nil || role == "" || strings.TrimSpace(string(capability)) == "" {
+		return false, nil
 	}
-	grants, ok := p.grants[role]
-	if !ok {
-		return false
+
+	var allowed bool
+	err := a.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM role_capabilities
+			WHERE role = $1 AND capability = $2
+		)
+	`, role, capability).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("authorize capability: %w", err)
 	}
-	_, ok = grants[capability]
-	return ok
+	return allowed, nil
 }
 
-func RequireCapability(policy *RolePolicy, resolve UserResolver, capability Capability) func(http.Handler) http.Handler {
+func RequireCapability(authorizer Authorizer, resolve UserResolver, capability Capability) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, ok := resolve(r.Context())
@@ -121,7 +98,16 @@ func RequireCapability(policy *RolePolicy, resolve UserResolver, capability Capa
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 				return
 			}
-			if !policy.Allows(user.Role, capability) {
+			if authorizer == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "authorization_failed"})
+				return
+			}
+			allowed, err := authorizer.Authorize(r.Context(), user, capability)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "authorization_failed"})
+				return
+			}
+			if !allowed {
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 				return
 			}
@@ -130,12 +116,8 @@ func RequireCapability(policy *RolePolicy, resolve UserResolver, capability Capa
 	}
 }
 
-func capabilities(values ...Capability) map[Capability]struct{} {
-	result := make(map[Capability]struct{}, len(values))
-	for _, value := range values {
-		result[value] = struct{}{}
-	}
-	return result
+func normalizeRole(role string) string {
+	return strings.ToLower(strings.TrimSpace(role))
 }
 
 func Describe(value Capability) Descriptor {

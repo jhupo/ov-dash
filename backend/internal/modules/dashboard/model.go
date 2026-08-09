@@ -1,7 +1,7 @@
 package dashboard
 
 type Metric struct {
-	Value       int64   `json:"value"`
+	Value      int64   `json:"value"`
 	ChangeText string  `json:"changeText"`
 	ChangePct  float64 `json:"changePct"`
 }
@@ -25,10 +25,10 @@ type RecentSale struct {
 }
 
 type Overview struct {
-	TotalRevenue Metric       `json:"totalRevenue"`
-	Subscriptions Metric      `json:"subscriptions"`
-	Sales         Metric      `json:"sales"`
-	ActiveNow     Metric      `json:"activeNow"`
+	TotalRevenue  Metric       `json:"totalRevenue"`
+	Subscriptions Metric       `json:"subscriptions"`
+	Sales         Metric       `json:"sales"`
+	ActiveNow     Metric       `json:"activeNow"`
 	Monthly       []ChartPoint `json:"monthly"`
 	RecentSales   []RecentSale `json:"recentSales"`
 }
@@ -37,10 +37,10 @@ type Analytics struct {
 	Traffic        []ChartPoint `json:"traffic"`
 	TotalClicks    Metric       `json:"totalClicks"`
 	UniqueVisitors Metric       `json:"uniqueVisitors"`
-	BounceRate      Metric       `json:"bounceRate"`
-	AvgSession      Metric       `json:"avgSession"`
-	Referrers       []BarItem    `json:"referrers"`
-	Devices         []BarItem    `json:"devices"`
+	BounceRate     Metric       `json:"bounceRate"`
+	AvgSession     Metric       `json:"avgSession"`
+	Referrers      []BarItem    `json:"referrers"`
+	Devices        []BarItem    `json:"devices"`
 }
 
 type Snapshot struct {

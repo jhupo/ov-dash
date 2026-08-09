@@ -6,17 +6,19 @@ import (
 	"ov-dash/backend/internal/modules/chats"
 	"ov-dash/backend/internal/modules/dashboard"
 	"ov-dash/backend/internal/modules/jobs"
+	"ov-dash/backend/internal/modules/notifications"
 	"ov-dash/backend/internal/modules/platforminfo"
 	"ov-dash/backend/internal/modules/proxy"
 	"ov-dash/backend/internal/modules/servers"
 	"ov-dash/backend/internal/modules/tasks"
 	"ov-dash/backend/internal/modules/updates"
 	"ov-dash/backend/internal/modules/users"
+	"ov-dash/backend/internal/modules/wiki"
 	platformmodule "ov-dash/backend/internal/platform/module"
 )
 
-func NewDefault() *platformmodule.Registry {
-	return platformmodule.NewRegistry(
+func Default() []platformmodule.Module {
+	return []platformmodule.Module{
 		auth.NewModule(),
 		updates.NewModule(),
 		jobs.NewModule(),
@@ -27,6 +29,8 @@ func NewDefault() *platformmodule.Registry {
 		apps.NewModule(),
 		chats.NewModule(),
 		proxy.NewModule(),
+		notifications.NewModule(),
 		servers.NewModule(),
-	)
+		wiki.NewModule(),
+	}
 }

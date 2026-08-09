@@ -5,11 +5,10 @@ import (
 
 	"ov-dash/backend/internal/cache"
 	"ov-dash/backend/internal/config"
-	"ov-dash/backend/internal/database"
 	"ov-dash/backend/internal/db"
 	"ov-dash/backend/internal/events"
-	"ov-dash/backend/internal/modules/proxy"
 	"ov-dash/backend/internal/platform/audit"
+	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/secret"
 	"ov-dash/backend/internal/queue"
 	"ov-dash/backend/pkg/logging"
@@ -22,18 +21,37 @@ type Runtime struct {
 	DB         *db.Pool
 	Queue      *queue.Client
 	Cache      *cache.Cache
-	Migrations *database.MigrationRunner
 	Events     *events.Bus
 	Logger     *zap.Logger
-	Proxy      *proxy.Service
 	Secrets    *secret.Store
 	Audit      *audit.Recorder
+	Authorizer capability.Authorizer
+	Outbox     *events.Outbox
 }
 
-func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
+func OpenAPI(ctx context.Context, cfg config.Config) (*Runtime, error) {
+	return open(ctx, cfg, true)
+}
+
+func OpenWorker(ctx context.Context, cfg config.Config) (*Runtime, error) {
+	return open(ctx, cfg, false)
+}
+
+func open(ctx context.Context, cfg config.Config, withCache bool) (*Runtime, error) {
 	logger := logging.New(cfg.App.Env)
-	if cfg.Security.UsesDefaultSecretKey() && cfg.App.Env != "local" {
-		logger.Warn("APP_SECRET_KEY uses the local default value; configure a stable private secret key")
+	if err := cfg.Security.Validate(); err != nil {
+		_ = logger.Sync()
+		return nil, err
+	}
+	if err := cfg.HTTP.Validate(); err != nil {
+		_ = logger.Sync()
+		return nil, err
+	}
+	if defaultKeyIDs := cfg.Security.DefaultSecretKeyIDs(); len(defaultKeyIDs) > 0 && cfg.App.Env != "local" {
+		logger.Warn(
+			"APP_SECRET_KEYS_JSON contains the local development default; replace these keys after rotating stored secrets",
+			zap.Strings("key_ids", defaultKeyIDs),
+		)
 	}
 
 	pg, err := db.Open(ctx, cfg.Postgres)
@@ -42,8 +60,21 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 		return nil, err
 	}
 
-	queueClient, err := queue.Open(ctx, cfg.Redis, queue.WithAudit(queue.NewPostgresAuditStore(pg)))
+	var cacheClient *cache.Cache
+	if withCache {
+		cacheClient, err = cache.Open(ctx, cfg.Redis)
+		if err != nil {
+			pg.Close()
+			_ = logger.Sync()
+			return nil, err
+		}
+	}
+
+	queueClient, err := queue.Open(pg)
 	if err != nil {
+		if cacheClient != nil {
+			_ = cacheClient.Close()
+		}
 		pg.Close()
 		_ = logger.Sync()
 		return nil, err
@@ -52,25 +83,33 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	eventBus := events.NewBus(logger)
 	eventBus.SubscribeAll(events.LogHandler(logger))
 
-	secrets := secret.NewStore(pg, cfg.Security.SecretKey)
+	secrets, err := secret.NewStore(pg, cfg.Security.ActiveSecretKeyID, cfg.Security.SecretKeys)
+	if err != nil {
+		if cacheClient != nil {
+			_ = cacheClient.Close()
+		}
+		pg.Close()
+		_ = logger.Sync()
+		return nil, err
+	}
 
 	return &Runtime{
 		Config:     cfg,
 		DB:         pg,
 		Queue:      queueClient,
-		Cache:      cache.New(queueClient),
-		Migrations: database.NewMigrationRunner(pg),
+		Cache:      cacheClient,
 		Events:     eventBus,
 		Logger:     logger,
-		Proxy:      proxy.NewService(proxy.NewRepositoryWithSecrets(pg, secrets)),
 		Secrets:    secrets,
 		Audit:      audit.NewRecorder(pg),
+		Authorizer: capability.NewPostgresAuthorizer(pg),
+		Outbox:     events.NewOutbox(pg),
 	}, nil
 }
 
 func (r *Runtime) Close() {
-	if r.Queue != nil {
-		if err := r.Queue.Close(); err != nil && r.Logger != nil {
+	if r.Cache != nil {
+		if err := r.Cache.Close(); err != nil && r.Logger != nil {
 			r.Logger.Error("close redis", zap.Error(err))
 		}
 	}

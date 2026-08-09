@@ -76,9 +76,6 @@ func normalizeSaveInput(input SaveInput) (SaveInput, error) {
 	if input.AuthType == "" {
 		input.AuthType = "password"
 	}
-	if input.CollectInterval == 0 {
-		input.CollectInterval = 60
-	}
 	if input.Name == "" {
 		return SaveInput{}, ErrNameRequired
 	}
@@ -93,9 +90,6 @@ func normalizeSaveInput(input SaveInput) (SaveInput, error) {
 	}
 	if input.AuthType != "password" && input.AuthType != "key" {
 		return SaveInput{}, ErrInvalidAuthType
-	}
-	if input.CollectInterval < 10 {
-		input.CollectInterval = 10
 	}
 	return input, nil
 }

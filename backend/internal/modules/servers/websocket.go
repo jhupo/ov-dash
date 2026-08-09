@@ -1,139 +1,215 @@
 package servers
 
 import (
-	"bufio"
-	"crypto/sha1"
-	"encoding/base64"
-	"encoding/binary"
+	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
+	"net/url"
 	"strings"
-	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
-type wsConn struct {
-	conn net.Conn
-	rw   *bufio.ReadWriter
-	mu   sync.Mutex
+const (
+	webSocketReadLimit  = 1 << 20
+	webSocketWriteWait  = 10 * time.Second
+	webSocketPongWait   = 60 * time.Second
+	webSocketPingPeriod = 25 * time.Second
+	webSocketCloseWait  = time.Second
+)
+
+type webSocketMessage struct {
+	messageType int
+	payload     []byte
 }
 
-func upgradeWebSocket(w http.ResponseWriter, r *http.Request) (*wsConn, error) {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		return nil, errors.New("missing websocket upgrade")
-	}
-	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
-	if key == "" {
-		return nil, errors.New("missing websocket key")
-	}
-	hijacker, ok := w.(http.Hijacker)
+type terminalResizeHandler func([]byte) (bool, error)
+
+func isWebSocketUpgradeRequest(r *http.Request) bool {
+	return websocket.IsWebSocketUpgrade(r)
+}
+
+func webSocketOriginAllowed(r *http.Request, allowedOrigins []string) bool {
+	origin, ok := canonicalWebSocketOrigin(r.Header.Get("Origin"))
 	if !ok {
-		return nil, errors.New("websocket hijacking is not supported")
+		return false
 	}
-	conn, rw, err := hijacker.Hijack()
-	if err != nil {
-		return nil, err
+	originURL, _ := url.Parse(origin)
+	if strings.EqualFold(originURL.Host, strings.TrimSpace(r.Host)) {
+		return true
 	}
-	accept := websocketAccept(key)
-	_, err = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\n" +
-		"Upgrade: websocket\r\n" +
-		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n")
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	if err := rw.Flush(); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return &wsConn{conn: conn, rw: rw}, nil
-}
-
-func websocketAccept(key string) string {
-	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-	return base64.StdEncoding.EncodeToString(sum[:])
-}
-
-func (c *wsConn) close() error {
-	return c.conn.Close()
-}
-
-func (c *wsConn) readText() (string, error) {
-	first, err := c.rw.ReadByte()
-	if err != nil {
-		return "", err
-	}
-	second, err := c.rw.ReadByte()
-	if err != nil {
-		return "", err
-	}
-	opcode := first & 0x0f
-	if opcode == 0x8 {
-		return "", io.EOF
-	}
-	if opcode != 0x1 && opcode != 0x2 {
-		return "", nil
-	}
-	masked := second&0x80 != 0
-	length := uint64(second & 0x7f)
-	if length == 126 {
-		var raw [2]byte
-		if _, err := io.ReadFull(c.rw, raw[:]); err != nil {
-			return "", err
-		}
-		length = uint64(binary.BigEndian.Uint16(raw[:]))
-	} else if length == 127 {
-		var raw [8]byte
-		if _, err := io.ReadFull(c.rw, raw[:]); err != nil {
-			return "", err
-		}
-		length = binary.BigEndian.Uint64(raw[:])
-	}
-	var mask [4]byte
-	if masked {
-		if _, err := io.ReadFull(c.rw, mask[:]); err != nil {
-			return "", err
+	for _, allowed := range allowedOrigins {
+		candidate, valid := canonicalWebSocketOrigin(allowed)
+		if valid && strings.EqualFold(candidate, origin) {
+			return true
 		}
 	}
-	if length > 1<<20 {
-		return "", errors.New("websocket frame is too large")
-	}
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(c.rw, payload); err != nil {
-		return "", err
-	}
-	if masked {
-		for i := range payload {
-			payload[i] ^= mask[i%4]
-		}
-	}
-	return string(payload), nil
+	return false
 }
 
-func (c *wsConn) writeText(text string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	payload := []byte(text)
-	header := []byte{0x81}
-	switch {
-	case len(payload) < 126:
-		header = append(header, byte(len(payload)))
-	case len(payload) <= 65535:
-		header = append(header, 126, byte(len(payload)>>8), byte(len(payload)))
-	default:
-		header = append(header, 127)
-		var raw [8]byte
-		binary.BigEndian.PutUint64(raw[:], uint64(len(payload)))
-		header = append(header, raw[:]...)
+func canonicalWebSocketOrigin(value string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
 	}
-	if _, err := c.rw.Write(header); err != nil {
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", false
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host), true
+}
+
+func upgradeWebSocket(w http.ResponseWriter, r *http.Request, allowedOrigins []string) (*websocket.Conn, error) {
+	upgrader := websocket.Upgrader{
+		HandshakeTimeout: webSocketWriteWait,
+		ReadBufferSize:   4096,
+		WriteBufferSize:  4096,
+		CheckOrigin: func(request *http.Request) bool {
+			return webSocketOriginAllowed(request, allowedOrigins)
+		},
+	}
+	return upgrader.Upgrade(w, r, nil)
+}
+
+func writeWebSocketPump(
+	ctx context.Context,
+	conn *websocket.Conn,
+	outbound <-chan webSocketMessage,
+	control <-chan webSocketMessage,
+) error {
+	ticker := time.NewTicker(webSocketPingPeriod)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case message := <-control:
+			if err := writeWebSocketMessage(conn, message); err != nil {
+				return err
+			}
+			continue
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			deadline := time.Now().Add(webSocketCloseWait)
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				deadline,
+			)
+			return ctx.Err()
+		case message := <-control:
+			if err := writeWebSocketMessage(conn, message); err != nil {
+				return err
+			}
+		case message := <-outbound:
+			if err := writeWebSocketMessage(conn, message); err != nil {
+				return err
+			}
+		case <-ticker.C:
+			if err := writeWebSocketMessage(conn, webSocketMessage{messageType: websocket.PingMessage}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func writeWebSocketMessage(conn *websocket.Conn, message webSocketMessage) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(webSocketWriteWait)); err != nil {
 		return err
 	}
-	if _, err := c.rw.Write(payload); err != nil {
+	return conn.WriteMessage(message.messageType, message.payload)
+}
+
+func readWebSocketPump(
+	ctx context.Context,
+	conn *websocket.Conn,
+	stdin io.Writer,
+	resize terminalResizeHandler,
+	control chan<- webSocketMessage,
+) error {
+	conn.SetReadLimit(webSocketReadLimit)
+	if err := conn.SetReadDeadline(time.Now().Add(webSocketPongWait)); err != nil {
 		return err
 	}
-	return c.rw.Flush()
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(webSocketPongWait))
+	})
+	conn.SetPingHandler(func(payload string) error {
+		return enqueueWebSocketMessage(ctx, control, webSocketMessage{
+			messageType: websocket.PongMessage,
+			payload:     []byte(payload),
+		})
+	})
+	conn.SetCloseHandler(func(int, string) error {
+		return nil
+	})
+
+	for {
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			return err
+		}
+		if messageType != websocket.TextMessage && messageType != websocket.BinaryMessage {
+			continue
+		}
+		if resize != nil {
+			handled, resizeErr := resize(payload)
+			if handled {
+				if resizeErr != nil {
+					return resizeErr
+				}
+				continue
+			}
+		}
+		if _, err := stdin.Write(payload); err != nil {
+			return err
+		}
+	}
+}
+
+func enqueueWebSocketMessage(ctx context.Context, target chan<- webSocketMessage, message webSocketMessage) error {
+	select {
+	case target <- message:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func copySSHOutput(ctx context.Context, reader io.Reader, outbound chan<- webSocketMessage) error {
+	buffer := make([]byte, 32*1024)
+	for {
+		count, err := reader.Read(buffer)
+		if count > 0 {
+			payload := append([]byte(nil), buffer[:count]...)
+			if sendErr := enqueueWebSocketMessage(ctx, outbound, webSocketMessage{
+				messageType: websocket.BinaryMessage,
+				payload:     payload,
+			}); sendErr != nil {
+				return sendErr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func writeWebSocketError(conn *websocket.Conn, code string) {
+	_ = conn.SetWriteDeadline(time.Now().Add(webSocketWriteWait))
+	_ = conn.WriteMessage(websocket.BinaryMessage, []byte(code+"\r\n"))
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseInternalServerErr, code),
+		time.Now().Add(webSocketCloseWait),
+	)
 }

@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"time"
 
+	"ov-dash/backend/internal/database"
 	"ov-dash/backend/internal/platform"
 	platformmodule "ov-dash/backend/internal/platform/module"
+	"ov-dash/backend/internal/queue"
 )
 
 type platformHealthResponse struct {
@@ -23,7 +25,7 @@ type platformHealthItem struct {
 	Message string `json:"message,omitempty"`
 }
 
-func platformHealthHandler(runtime *platform.Runtime, registry *platformmodule.Registry) http.HandlerFunc {
+func platformHealthHandler(runtime *platform.Runtime, catalog *platformmodule.Catalog) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -36,41 +38,22 @@ func platformHealthHandler(runtime *platform.Runtime, registry *platformmodule.R
 				return runtime.Cache.Ping(ctx)
 			}},
 			{ID: "migrations", Name: "Migrations", Check: func(ctx context.Context) error {
-				var failed int
-				if err := runtime.DB.QueryRow(ctx, `
-					SELECT count(*)
-					FROM schema_migrations
-					WHERE status = 'failed'
-				`).Scan(&failed); err != nil {
-					return err
-				}
-				if failed > 0 {
-					return fmt.Errorf("%d failed migrations", failed)
-				}
-				return nil
+				return database.NewMigrationRunner(runtime.DB).VerifyDir(ctx, runtime.Config.Migrations.Dir)
 			}},
 			{ID: "worker", Name: "Worker heartbeat", Check: func(ctx context.Context) error {
 				items, err := runtime.Queue.ListWorkerHeartbeats(ctx, 30*time.Second)
 				if err != nil {
 					return err
 				}
-				if len(items) == 0 {
-					return fmt.Errorf("no worker heartbeat in the last 30s")
+				releaseID := queue.NormalizeReleaseID(runtime.Config.App.Version)
+				if !hasWorkerHeartbeatForRelease(items, releaseID) {
+					return fmt.Errorf("no worker heartbeat for release %s in the last 30s", releaseID)
 				}
 				return nil
 			}},
 		}
-		if registry != nil {
-			checks = append(checks, registry.HealthChecks(platformmodule.Context{
-				Config:  runtime.Config,
-				DB:      runtime.DB,
-				Queue:   runtime.Queue,
-				Cache:   runtime.Cache,
-				Events:  runtime.Events,
-				Logger:  runtime.Logger,
-				Secrets: runtime.Secrets,
-				Audit:   runtime.Audit,
-			})...)
+		if catalog != nil {
+			checks = append(checks, catalog.HealthChecks()...)
 		}
 
 		writeJSON(w, http.StatusOK, runPlatformHealthChecks(ctx, checks, time.Now().UTC()))

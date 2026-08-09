@@ -2,30 +2,46 @@ package servers
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
-type SSHAccessService struct {
-	repository *Repository
-	executor   *SSHExecutor
+var ErrServerConnectionExpired = errors.New("server_connection_expired")
+
+type sshAccessRepository interface {
+	GetWithCredentials(context.Context, string) (Connection, error)
+	VerifyOrRememberSSHHostKey(context.Context, SSHHostKey) error
 }
 
-func NewSSHAccessService(repository *Repository, executor *SSHExecutor) *SSHAccessService {
+type SSHAccessService struct {
+	repository sshAccessRepository
+	executor   *SSHExecutor
+	now        func() time.Time
+}
+
+func NewSSHAccessService(repository sshAccessRepository, executor *SSHExecutor, now func() time.Time) *SSHAccessService {
 	if executor == nil {
-		executor = NewSSHExecutor(20 * time.Second)
+		executor = NewSSHExecutor(20*time.Second, repository)
+	}
+	if now == nil {
+		now = time.Now
 	}
 	return &SSHAccessService{
 		repository: repository,
 		executor:   executor,
+		now:        now,
 	}
 }
 
 func (s *SSHAccessService) RunCommand(ctx context.Context, id string, command string) (string, error) {
-	item, err := s.repository.Get(ctx, id)
+	item, err := s.repository.GetWithCredentials(ctx, id)
 	if err != nil {
 		return "", err
+	}
+	if connectionExpired(item, s.now()) {
+		return "", ErrServerConnectionExpired
 	}
 	client, err := s.executor.Connect(ctx, item)
 	if err != nil {
@@ -36,9 +52,12 @@ func (s *SSHAccessService) RunCommand(ctx context.Context, id string, command st
 }
 
 func (s *SSHAccessService) OpenShell(ctx context.Context, id string) (*ssh.Client, *ssh.Session, error) {
-	item, err := s.repository.Get(ctx, id)
+	item, err := s.repository.GetWithCredentials(ctx, id)
 	if err != nil {
 		return nil, nil, err
+	}
+	if connectionExpired(item, s.now()) {
+		return nil, nil, ErrServerConnectionExpired
 	}
 	client, err := s.executor.Connect(ctx, item)
 	if err != nil {
@@ -55,6 +74,10 @@ func (s *SSHAccessService) OpenShell(ctx context.Context, id string) (*ssh.Clien
 		return nil, nil, err
 	}
 	return client, session, nil
+}
+
+func connectionExpired(item Connection, now time.Time) bool {
+	return item.ExpiresAt != nil && !item.ExpiresAt.After(now)
 }
 
 func requestDefaultPTY(session *ssh.Session) error {

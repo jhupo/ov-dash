@@ -2,67 +2,50 @@ package servers
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"time"
+	"errors"
+	"fmt"
+	"strings"
 
 	"ov-dash/backend/internal/db"
 	"ov-dash/backend/internal/platform/secret"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
+type repositoryDB interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type secretStore interface {
+	PutTx(context.Context, pgx.Tx, string, string, string) (string, error)
+	Get(context.Context, string) (string, error)
+	DeleteTx(context.Context, pgx.Tx, string) error
+}
+
 type Repository struct {
-	db          *db.Pool
-	credentials *CredentialResolver
-	metrics     *MetricsStore
+	db      repositoryDB
+	secrets secretStore
 }
 
-func NewRepository(db *db.Pool) *Repository {
-	return NewRepositoryWithCredentials(db, nil)
-}
-
-func NewRepositoryWithSecrets(db *db.Pool, secrets *secret.Store) *Repository {
-	return NewRepositoryWithCredentials(db, NewCredentialResolver(secrets))
-}
-
-func NewRepositoryWithCredentials(db *db.Pool, credentials *CredentialResolver) *Repository {
-	return &Repository{
-		db:          db,
-		credentials: credentials,
-		metrics:     NewMetricsStore(db),
+func NewRepository(database *db.Pool, secrets *secret.Store) *Repository {
+	var secretBackend secretStore
+	if secrets != nil {
+		secretBackend = secrets
 	}
-}
-
-func (r *Repository) credentialResolver() *CredentialResolver {
-	if r.credentials != nil {
-		return r.credentials
-	}
-	return NewCredentialResolver(nil)
-}
-
-func (r *Repository) metricStore() *MetricsStore {
-	if r.metrics != nil {
-		return r.metrics
-	}
-	return NewMetricsStore(r.db)
+	return &Repository{db: database, secrets: secretBackend}
 }
 
 func (r *Repository) List(ctx context.Context) ([]Connection, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT
-			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.password_secret_id, c.private_key_secret_id,
-			c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
-			c.collect_status, c.collect_error, c.collect_failure_count, c.last_collected_at, c.agent_last_seen_at, c.created_at, c.updated_at,
-			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
-			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
-			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
-			m.load1, m.load5, m.load15, m.tcp_connections, m.udp_connections, m.process_count, m.uptime_seconds, m.architecture, m.virtualization,
-			m.os_name, m.cpu_model, m.gpu_model, m.region, m.raw, m.collected_at
-		FROM server_connections c
-		LEFT JOIN server_metrics m ON m.server_id = c.id
-		ORDER BY c.group_name ASC, c.name ASC, c.host ASC
+		SELECT id, name, group_name, region, host, port, username, auth_type,
+		       password_secret_id, private_key_secret_id,
+		       expires_at, created_at, updated_at
+		FROM server_connections
+		ORDER BY group_name ASC, name ASC, host ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -75,49 +58,85 @@ func (r *Repository) List(ctx context.Context) ([]Connection, error) {
 		if err != nil {
 			return nil, err
 		}
-		item = r.credentialResolver().Resolve(ctx, item)
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
 func (r *Repository) Get(ctx context.Context, id string) (Connection, error) {
-	row := r.db.QueryRow(ctx, `
-		SELECT
-			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.password_secret_id, c.private_key_secret_id,
-			c.expires_at, c.collect_interval_seconds, c.next_collect_at, c.collector_installed, c.agent_port,
-			c.collect_status, c.collect_error, c.collect_failure_count, c.last_collected_at, c.agent_last_seen_at, c.created_at, c.updated_at,
-			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
-			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
-			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
-			m.load1, m.load5, m.load15, m.tcp_connections, m.udp_connections, m.process_count, m.uptime_seconds, m.architecture, m.virtualization,
-			m.os_name, m.cpu_model, m.gpu_model, m.region, m.raw, m.collected_at
-		FROM server_connections c
-		LEFT JOIN server_metrics m ON m.server_id = c.id
-		WHERE c.id = $1
-	`, id)
-	item, err := scanConnection(row)
+	return scanConnection(r.db.QueryRow(ctx, `
+		SELECT id, name, group_name, region, host, port, username, auth_type,
+		       password_secret_id, private_key_secret_id,
+		       expires_at, created_at, updated_at
+		FROM server_connections
+		WHERE id = $1
+	`, id))
+}
+
+func (r *Repository) GetWithCredentials(ctx context.Context, id string) (Connection, error) {
+	item, err := r.Get(ctx, id)
 	if err != nil {
 		return Connection{}, err
 	}
-	return r.credentialResolver().Resolve(ctx, item), nil
+	if item.PasswordSecretID != "" {
+		if r.secrets == nil {
+			return Connection{}, errors.New("server secret store is unavailable")
+		}
+		item.Password, err = r.secrets.Get(ctx, item.PasswordSecretID)
+		if err != nil {
+			return Connection{}, fmt.Errorf("decrypt server password secret %q: %w", item.PasswordSecretID, err)
+		}
+	}
+	if item.PrivateKeySecretID != "" {
+		if r.secrets == nil {
+			return Connection{}, errors.New("server secret store is unavailable")
+		}
+		item.PrivateKey, err = r.secrets.Get(ctx, item.PrivateKeySecretID)
+		if err != nil {
+			return Connection{}, fmt.Errorf("decrypt server private key secret %q: %w", item.PrivateKeySecretID, err)
+		}
+	}
+	return item, nil
 }
 
 func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, error) {
-	credentials, err := r.credentialResolver().PrepareSave(ctx, input)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Connection{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var currentPasswordSecretID string
+	var currentPrivateKeySecretID string
+	err = tx.QueryRow(ctx, `
+		SELECT password_secret_id, private_key_secret_id
+		FROM server_connections
+		WHERE id = $1
+		FOR UPDATE
+	`, input.ID).Scan(&currentPasswordSecretID, &currentPrivateKeySecretID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return Connection{}, err
+	}
+
+	passwordSecretID, err := r.updateCredential(
+		ctx, tx, input.ID, "password", currentPasswordSecretID, input.Password, input.ClearSecret,
+	)
+	if err != nil {
+		return Connection{}, err
+	}
+	privateKeySecretID, err := r.updateCredential(
+		ctx, tx, input.ID, "private_key", currentPrivateKeySecretID, input.PrivateKey, input.ClearSecret,
+	)
 	if err != nil {
 		return Connection{}, err
 	}
 
-	var item Connection
-	err = r.db.QueryRow(ctx, `
+	item, err := scanConnection(tx.QueryRow(ctx, `
 		INSERT INTO server_connections (
 			id, name, group_name, region, host, port, username, auth_type,
-			password, private_key, password_secret_id, private_key_secret_id,
-			expires_at, collect_interval_seconds, next_collect_at
+			password, private_key, password_secret_id, private_key_secret_id, expires_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, ''), COALESCE($10, ''), $11, $12, $13, $15, now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '', '', $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			group_name = EXCLUDED.group_name,
@@ -127,35 +146,14 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 			username = EXCLUDED.username,
 			auth_type = EXCLUDED.auth_type,
 			expires_at = EXCLUDED.expires_at,
-			collect_interval_seconds = EXCLUDED.collect_interval_seconds,
-			password = CASE
-				WHEN $14 THEN ''
-				WHEN $9::text IS NULL THEN server_connections.password
-				ELSE EXCLUDED.password
-			END,
-			private_key = CASE
-				WHEN $14 THEN ''
-				WHEN $10::text IS NULL THEN server_connections.private_key
-				ELSE EXCLUDED.private_key
-			END,
-			password_secret_id = CASE
-				WHEN $14 THEN ''
-				WHEN NOT $16::boolean THEN server_connections.password_secret_id
-				ELSE EXCLUDED.password_secret_id
-			END,
-			private_key_secret_id = CASE
-				WHEN $14 THEN ''
-				WHEN NOT $17::boolean THEN server_connections.private_key_secret_id
-				ELSE EXCLUDED.private_key_secret_id
-			END,
-			collect_status = 'pending',
-			collect_error = '',
-			collect_failure_count = 0,
+			password = '',
+			private_key = '',
+			password_secret_id = EXCLUDED.password_secret_id,
+			private_key_secret_id = EXCLUDED.private_key_secret_id,
 			updated_at = now()
 		RETURNING id, name, group_name, region, host, port, username, auth_type,
-		          password, private_key, password_secret_id, private_key_secret_id,
-		          expires_at, collect_interval_seconds, next_collect_at, collector_installed, agent_port,
-		          collect_status, collect_error, collect_failure_count, last_collected_at, agent_last_seen_at, created_at, updated_at
+		          password_secret_id, private_key_secret_id,
+		          expires_at, created_at, updated_at
 	`,
 		input.ID,
 		input.Name,
@@ -165,192 +163,138 @@ func (r *Repository) Upsert(ctx context.Context, input SaveInput) (Connection, e
 		input.Port,
 		input.Username,
 		input.AuthType,
-		credentials.Password,
-		credentials.PrivateKey,
-		credentials.PasswordSecretID,
-		credentials.PrivateKeySecretID,
+		passwordSecretID,
+		privateKeySecretID,
 		input.ExpiresAt,
-		input.ClearSecret,
-		input.CollectInterval,
-		input.Password != nil,
-		input.PrivateKey != nil,
-	).Scan(
-		&item.ID,
-		&item.Name,
-		&item.GroupName,
-		&item.Region,
-		&item.Host,
-		&item.Port,
-		&item.Username,
-		&item.AuthType,
-		&item.Password,
-		&item.PrivateKey,
-		&item.PasswordSecretID,
-		&item.PrivateKeySecretID,
-		&item.ExpiresAt,
-		&item.CollectInterval,
-		&item.NextCollectAt,
-		&item.CollectorInstalled,
-		&item.AgentPort,
-		&item.CollectStatus,
-		&item.CollectError,
-		&item.CollectFailureCount,
-		&item.LastCollectedAt,
-		&item.AgentLastSeenAt,
-		&item.CreatedAt,
-		&item.UpdatedAt,
-	)
+	))
 	if err != nil {
 		return Connection{}, err
 	}
-	return r.credentialResolver().Resolve(ctx, item), nil
+	if err := tx.Commit(ctx); err != nil {
+		return Connection{}, err
+	}
+	return item, nil
 }
 
-func (r *Repository) DueForCollection(ctx context.Context, limit int) ([]Connection, error) {
-	active, err := r.MonitorActive(ctx)
-	if err != nil {
-		return nil, err
+func (r *Repository) updateCredential(
+	ctx context.Context,
+	tx pgx.Tx,
+	serverID string,
+	name string,
+	currentSecretID string,
+	value *string,
+	clear bool,
+) (string, error) {
+	if !clear && value == nil {
+		return currentSecretID, nil
 	}
-	if !active {
-		return []Connection{}, nil
+	if r.secrets == nil {
+		return "", errors.New("server secret store is unavailable")
 	}
-	if err := r.ResetStaleCollecting(ctx, 2*time.Minute); err != nil {
-		return nil, err
-	}
-	rows, err := r.db.Query(ctx, `
-		SELECT
-			c.id, c.name, c.group_name, c.region, c.host, c.port, c.username, c.auth_type,
-			c.password, c.private_key, c.password_secret_id, c.private_key_secret_id,
-			c.expires_at, c.collect_interval_seconds, c.next_collect_at,
-			c.collector_installed, c.agent_port, c.collect_status, c.collect_error, c.collect_failure_count, c.last_collected_at,
-			c.agent_last_seen_at, c.created_at, c.updated_at,
-			m.server_id, m.cpu_percent, m.cpu_cores, m.latency_ms, m.memory_used_bytes, m.memory_total_bytes,
-			m.swap_used_bytes, m.swap_total_bytes, m.disk_used_bytes, m.disk_total_bytes,
-			m.network_rx_bytes, m.network_tx_bytes, m.network_rx_rate_bps, m.network_tx_rate_bps,
-			m.load1, m.load5, m.load15, m.tcp_connections, m.udp_connections, m.process_count, m.uptime_seconds, m.architecture, m.virtualization,
-			m.os_name, m.cpu_model, m.gpu_model, m.region, m.raw, m.collected_at
-		FROM server_connections c
-		LEFT JOIN server_metrics m ON m.server_id = c.id
-		WHERE c.next_collect_at <= now()
-		  AND c.collect_status <> 'collecting'
-		  AND (c.agent_last_seen_at IS NULL OR c.agent_last_seen_at < now() - interval '10 seconds')
-		ORDER BY c.next_collect_at ASC
-		LIMIT $1
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]Connection, 0)
-	for rows.Next() {
-		item, err := scanConnection(rows)
-		if err != nil {
-			return nil, err
+	if clear || *value == "" {
+		if err := r.secrets.DeleteTx(ctx, tx, currentSecretID); err != nil {
+			return "", fmt.Errorf("delete server %s secret: %w", name, err)
 		}
-		item = r.credentialResolver().Resolve(ctx, item)
-		items = append(items, item)
+		return "", nil
 	}
-	return items, rows.Err()
-}
 
-func (r *Repository) TouchMonitorActivity(ctx context.Context, ttl time.Duration) error {
-	if ttl <= 0 {
-		ttl = 30 * time.Second
+	secretID, err := r.secrets.PutTx(ctx, tx, serverCredentialScope(serverID), name, *value)
+	if err != nil {
+		return "", fmt.Errorf("store server %s secret: %w", name, err)
 	}
-	seconds := int(ttl / time.Second)
-	if ttl%time.Second != 0 {
-		seconds++
+	if currentSecretID != "" && currentSecretID != secretID {
+		if err := r.secrets.DeleteTx(ctx, tx, currentSecretID); err != nil {
+			return "", fmt.Errorf("delete replaced server %s secret: %w", name, err)
+		}
 	}
-	if seconds < 1 {
-		seconds = 1
-	}
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO server_monitor_activity (id, active_until)
-		VALUES (true, now() + make_interval(secs => $1))
-		ON CONFLICT (id) DO UPDATE SET
-			active_until = GREATEST(server_monitor_activity.active_until, EXCLUDED.active_until),
-			updated_at = now()
-	`, seconds)
-	return err
-}
-
-func (r *Repository) MonitorActive(ctx context.Context) (bool, error) {
-	var active bool
-	err := r.db.QueryRow(ctx, `
-		SELECT COALESCE(max(active_until) > now(), false)
-		FROM server_monitor_activity
-	`).Scan(&active)
-	return active, err
-}
-
-func (r *Repository) ResetStaleCollecting(ctx context.Context, maxAge time.Duration) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE server_connections
-		SET collect_status = 'pending',
-		    collect_error = '采集超时，已重新进入队列',
-		    collect_failure_count = collect_failure_count + 1,
-		    next_collect_at = now() + make_interval(secs => LEAST(3600, GREATEST(10, collect_interval_seconds) * power(2, LEAST(8, collect_failure_count))::int)),
-		    updated_at = now()
-		WHERE collect_status = 'collecting'
-		  AND updated_at < now() - $1::interval
-	`, maxAge.String())
-	return err
-}
-
-func (r *Repository) MarkCollectQueued(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE server_connections
-		SET collect_status = 'pending',
-		    collect_error = '',
-		    next_collect_at = now() + make_interval(secs => collect_interval_seconds),
-		    updated_at = now()
-		WHERE id = $1
-	`, id)
-	return err
-}
-
-func (r *Repository) Samples(ctx context.Context, id string, since time.Time) ([]Metric, error) {
-	return r.metricStore().Samples(ctx, id, since)
+	return secretID, nil
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
-	item, _ := r.Get(ctx, id)
-	_, err := r.db.Exec(ctx, `DELETE FROM server_connections WHERE id = $1`, id)
-	if err == nil {
-		_ = r.credentialResolver().Delete(ctx, item)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	return err
-}
+	defer tx.Rollback(ctx)
 
-func (r *Repository) MarkCollecting(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE server_connections
-		SET collect_status = 'collecting', collect_error = '', updated_at = now()
+	var passwordSecretID string
+	var privateKeySecretID string
+	err = tx.QueryRow(ctx, `
+		SELECT password_secret_id, private_key_secret_id
+		FROM server_connections
 		WHERE id = $1
-	`, id)
-	return err
+		FOR UPDATE
+	`, id).Scan(&passwordSecretID, &privateKeySecretID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM server_connections WHERE id = $1`, id); err != nil {
+		return err
+	}
+	if (passwordSecretID != "" || privateKeySecretID != "") && r.secrets == nil {
+		return errors.New("server secret store is unavailable")
+	}
+	if passwordSecretID != "" {
+		if err := r.secrets.DeleteTx(ctx, tx, passwordSecretID); err != nil {
+			return fmt.Errorf("delete server password secret: %w", err)
+		}
+	}
+	if privateKeySecretID != "" {
+		if err := r.secrets.DeleteTx(ctx, tx, privateKeySecretID); err != nil {
+			return fmt.Errorf("delete server private key secret: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
-func (r *Repository) MarkCollectFailed(ctx context.Context, id string, message string) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE server_connections
-		SET collect_status = 'error',
-		    collect_error = $2,
-		    collect_failure_count = collect_failure_count + 1,
-		    next_collect_at = now() + make_interval(secs => LEAST(3600, GREATEST(10, collect_interval_seconds) * power(2, LEAST(8, collect_failure_count))::int)),
-		    updated_at = now()
-		WHERE id = $1
-	`, id, message)
-	return err
-}
+func (r *Repository) VerifyOrRememberSSHHostKey(ctx context.Context, key SSHHostKey) error {
+	if r == nil || r.db == nil || strings.TrimSpace(key.ServerID) == "" ||
+		strings.TrimSpace(key.Algorithm) == "" || strings.TrimSpace(key.PublicKey) == "" ||
+		strings.TrimSpace(key.Fingerprint) == "" {
+		return errSSHHostKeyVerificationFailed
+	}
+	tag, err := r.db.Exec(ctx, `
+		INSERT INTO server_ssh_host_keys (server_id, algorithm, public_key, fingerprint)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (server_id) DO NOTHING
+	`, key.ServerID, key.Algorithm, key.PublicKey, key.Fingerprint)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
 
-func (r *Repository) SaveMetric(ctx context.Context, metric Metric) error {
-	return r.metricStore().Save(ctx, metric, true)
-}
-
-func (r *Repository) SaveAgentMetric(ctx context.Context, metric Metric) error {
-	return r.metricStore().Save(ctx, metric, false)
+	var stored SSHHostKey
+	err = r.db.QueryRow(ctx, `
+		SELECT server_id, algorithm, public_key, fingerprint
+		FROM server_ssh_host_keys
+		WHERE server_id = $1
+	`, key.ServerID).Scan(&stored.ServerID, &stored.Algorithm, &stored.PublicKey, &stored.Fingerprint)
+	if err != nil {
+		return err
+	}
+	if stored.Algorithm != key.Algorithm || stored.PublicKey != key.PublicKey || stored.Fingerprint != key.Fingerprint {
+		return ErrSSHHostKeyChanged
+	}
+	tag, err = r.db.Exec(ctx, `
+		UPDATE server_ssh_host_keys
+		SET last_verified_at = now()
+		WHERE server_id = $1
+		  AND algorithm = $2
+		  AND public_key = $3
+		  AND fingerprint = $4
+	`, key.ServerID, key.Algorithm, key.PublicKey, key.Fingerprint)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrSSHHostKeyChanged
+	}
+	return nil
 }
 
 type connectionScanner interface {
@@ -359,35 +303,6 @@ type connectionScanner interface {
 
 func scanConnection(row connectionScanner) (Connection, error) {
 	var item Connection
-	var metricID sql.NullString
-	var cpuPercent sql.NullFloat64
-	var cpuCores sql.NullInt64
-	var latencyMS sql.NullFloat64
-	var memoryUsedBytes sql.NullInt64
-	var memoryTotalBytes sql.NullInt64
-	var swapUsedBytes sql.NullInt64
-	var swapTotalBytes sql.NullInt64
-	var diskUsedBytes sql.NullInt64
-	var diskTotalBytes sql.NullInt64
-	var networkRXBytes sql.NullInt64
-	var networkTXBytes sql.NullInt64
-	var networkRXRateBps sql.NullFloat64
-	var networkTXRateBps sql.NullFloat64
-	var load1 sql.NullFloat64
-	var load5 sql.NullFloat64
-	var load15 sql.NullFloat64
-	var tcpConnections sql.NullInt64
-	var udpConnections sql.NullInt64
-	var processCount sql.NullInt64
-	var uptimeSeconds sql.NullInt64
-	var architecture sql.NullString
-	var virtualization sql.NullString
-	var osName sql.NullString
-	var cpuModel sql.NullString
-	var gpuModel sql.NullString
-	var region sql.NullString
-	var collectedAt sql.NullTime
-	var raw []byte
 	err := row.Scan(
 		&item.ID,
 		&item.Name,
@@ -397,145 +312,19 @@ func scanConnection(row connectionScanner) (Connection, error) {
 		&item.Port,
 		&item.Username,
 		&item.AuthType,
-		&item.Password,
-		&item.PrivateKey,
 		&item.PasswordSecretID,
 		&item.PrivateKeySecretID,
 		&item.ExpiresAt,
-		&item.CollectInterval,
-		&item.NextCollectAt,
-		&item.CollectorInstalled,
-		&item.AgentPort,
-		&item.CollectStatus,
-		&item.CollectError,
-		&item.CollectFailureCount,
-		&item.LastCollectedAt,
-		&item.AgentLastSeenAt,
 		&item.CreatedAt,
 		&item.UpdatedAt,
-		&metricID,
-		&cpuPercent,
-		&cpuCores,
-		&latencyMS,
-		&memoryUsedBytes,
-		&memoryTotalBytes,
-		&swapUsedBytes,
-		&swapTotalBytes,
-		&diskUsedBytes,
-		&diskTotalBytes,
-		&networkRXBytes,
-		&networkTXBytes,
-		&networkRXRateBps,
-		&networkTXRateBps,
-		&load1,
-		&load5,
-		&load15,
-		&tcpConnections,
-		&udpConnections,
-		&processCount,
-		&uptimeSeconds,
-		&architecture,
-		&virtualization,
-		&osName,
-		&cpuModel,
-		&gpuModel,
-		&region,
-		&raw,
-		&collectedAt,
 	)
-	if err != nil {
-		return Connection{}, err
-	}
-	if metricID.Valid {
-		metric := Metric{
-			ServerID:         metricID.String,
-			CPUPercent:       nullFloat(cpuPercent),
-			CPUCores:         nullInt(cpuCores),
-			LatencyMS:        nullFloat(latencyMS),
-			MemoryUsedBytes:  nullInt(memoryUsedBytes),
-			MemoryTotalBytes: nullInt(memoryTotalBytes),
-			SwapUsedBytes:    nullInt(swapUsedBytes),
-			SwapTotalBytes:   nullInt(swapTotalBytes),
-			DiskUsedBytes:    nullInt(diskUsedBytes),
-			DiskTotalBytes:   nullInt(diskTotalBytes),
-			NetworkRXBytes:   nullInt(networkRXBytes),
-			NetworkTXBytes:   nullInt(networkTXBytes),
-			NetworkRXRateBps: nullFloat(networkRXRateBps),
-			NetworkTXRateBps: nullFloat(networkTXRateBps),
-			Load1:            nullFloat(load1),
-			Load5:            nullFloat(load5),
-			Load15:           nullFloat(load15),
-			TCPConnections:   nullInt(tcpConnections),
-			UDPConnections:   nullInt(udpConnections),
-			ProcessCount:     nullInt(processCount),
-			UptimeSeconds:    nullInt(uptimeSeconds),
-			Architecture:     nullString(architecture),
-			Virtualization:   nullString(virtualization),
-			OSName:           nullString(osName),
-			CPUModel:         nullString(cpuModel),
-			GPUModel:         nullString(gpuModel),
-			Region:           nullString(region),
-			CollectedAt:      nullTime(collectedAt),
-		}
-		if len(raw) > 0 {
-			_ = json.Unmarshal(raw, &metric.Raw)
-		}
-		item.Metric = &metric
-	}
-	return item, nil
+	return item, err
 }
 
-func nullFloat(value sql.NullFloat64) float64 {
-	if !value.Valid {
-		return 0
-	}
-	return value.Float64
-}
-
-func nullInt(value sql.NullInt64) int64 {
-	if !value.Valid {
-		return 0
-	}
-	return value.Int64
-}
-
-func nullString(value sql.NullString) string {
-	if !value.Valid {
-		return ""
-	}
-	return value.String
-}
-
-func nullTime(value sql.NullTime) time.Time {
-	if !value.Valid {
-		return time.Time{}
-	}
-	return value.Time
-}
-
-func collectionRetryDelaySeconds(intervalSeconds int, failureCount int) int {
-	if intervalSeconds < 10 {
-		intervalSeconds = 10
-	}
-	if failureCount < 1 {
-		failureCount = 1
-	}
-	if failureCount > 9 {
-		failureCount = 9
-	}
-	delay := intervalSeconds
-	for i := 1; i < failureCount; i++ {
-		delay *= 2
-		if delay >= 3600 {
-			return 3600
-		}
-	}
-	if delay > 3600 {
-		return 3600
-	}
-	return delay
+func serverCredentialScope(id string) string {
+	return "server_connections:" + id
 }
 
 func IsNotFound(err error) bool {
-	return err == pgx.ErrNoRows
+	return errors.Is(err, pgx.ErrNoRows)
 }

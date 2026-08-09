@@ -10,15 +10,31 @@ import (
 	"testing"
 	"time"
 
-	"ov-dash/backend/internal/events"
 	"ov-dash/backend/internal/modules/auth"
 	"ov-dash/backend/internal/platform/audit"
 	platformmodule "ov-dash/backend/internal/platform/module"
 	"ov-dash/backend/internal/queue"
 
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
+
+func TestModuleUsesUnifiedContract(t *testing.T) {
+	var module platformmodule.Module = Module{}
+	catalog, err := platformmodule.NewCatalog(platformmodule.Context{}, module)
+	if err != nil {
+		t.Fatalf("register jobs module: %v", err)
+	}
+	descriptors := catalog.Descriptors()
+	if len(descriptors) != 1 || descriptors[0].ID != "jobs" {
+		t.Fatalf("module descriptors = %#v", descriptors)
+	}
+	if len(descriptors[0].Jobs) != 1 || descriptors[0].Jobs[0].Type != "noop" || descriptors[0].Jobs[0].ModuleID != "jobs" {
+		t.Fatalf("job registration = %#v", descriptors[0].Jobs)
+	}
+	if len(descriptors[0].Capabilities) != 3 {
+		t.Fatalf("job capabilities = %#v", descriptors[0].Capabilities)
+	}
+}
 
 func TestCreateMapsValidationAndQueueErrors(t *testing.T) {
 	tests := []struct {
@@ -86,16 +102,11 @@ func TestCreateMapsValidationAndQueueErrors(t *testing.T) {
 	}
 }
 
-func TestCreateEnqueuesNormalizedJobAndPublishesEvent(t *testing.T) {
+func TestCreateEnqueuesNormalizedJob(t *testing.T) {
 	fakeQueue := &fakeJobQueue{}
 	registry := platformmodule.NewJobRegistry()
 	registerNoop(t, registry, 1)
 	handler := newTestHandler(fakeQueue, registry)
-	published := []events.Event{}
-	handler.events.SubscribeAll(func(_ context.Context, event events.Event) error {
-		published = append(published, event)
-		return nil
-	})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/jobs", bytes.NewBufferString(`{
 		"type": "noop",
@@ -119,9 +130,6 @@ func TestCreateEnqueuesNormalizedJobAndPublishesEvent(t *testing.T) {
 	}
 	if fakeQueue.enqueued.job.MaxAttempts != 1 {
 		t.Fatalf("max attempts = %d, want registry override 1", fakeQueue.enqueued.job.MaxAttempts)
-	}
-	if len(published) != 1 || published[0].Type != "job.enqueued" {
-		t.Fatalf("published events = %#v, want one job.enqueued", published)
 	}
 }
 
@@ -226,6 +234,7 @@ func TestRequeueRecordsAudit(t *testing.T) {
 	handler.audit = auditRecorder
 	recorder := httptest.NewRecorder()
 	request := requestWithUser(requestWithJobID(http.MethodPost, "/jobs/job-1/requeue", `{"idempotency_key":"once"}`, "job-1"))
+	request.RemoteAddr = "198.51.100.8:54321"
 	request.Header.Set("X-Forwarded-For", "203.0.113.9, 192.0.2.10")
 
 	handler.Requeue(recorder, request)
@@ -240,14 +249,13 @@ func TestRequeueRecordsAudit(t *testing.T) {
 	if entry.Metadata["new_job_id"] != "new-job" || entry.Metadata["job_type"] != "noop" || entry.Metadata["idempotency_key"] != "once" {
 		t.Fatalf("audit metadata = %#v", entry.Metadata)
 	}
-	if entry.IP != "203.0.113.9" {
-		t.Fatalf("audit ip = %q, want forwarded address", entry.IP)
+	if entry.IP != "198.51.100.8" {
+		t.Fatalf("audit ip = %q, want sanitized remote address", entry.IP)
 	}
 }
 
 func newTestHandler(q *fakeJobQueue, registry *platformmodule.JobRegistry) *Handler {
 	return &Handler{
-		events:    events.NewBus(zap.NewNop()),
 		queue:     q,
 		queueName: "jobs:test",
 		registry:  registry,
