@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import axios from 'axios'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -42,7 +42,7 @@ export function UpdateSwitch() {
   const queryClient = useQueryClient()
   const can = useCan()
   const canApplyUpdate = can('updates:apply')
-  const [operationId, setOperationId] = useState<string>()
+  const [requestedOperationId, setRequestedOperationId] = useState<string>()
 
   const statusQuery = useQuery({
     queryKey: ['updates'],
@@ -51,10 +51,7 @@ export function UpdateSwitch() {
       isActiveOperation(query.state.data?.operation) ? 2_000 : false,
   })
   const statusOperation = statusQuery.data?.operation
-
-  useEffect(() => {
-    if (statusOperation?.id) setOperationId(statusOperation.id)
-  }, [statusOperation?.id])
+  const operationId = statusOperation?.id ?? requestedOperationId
 
   const operationQuery = useQuery({
     queryKey: ['updates', 'operations', operationId],
@@ -83,7 +80,7 @@ export function UpdateSwitch() {
   const applyMutation = useMutation({
     mutationFn: applyUpdate,
     onSuccess: async (operation) => {
-      setOperationId(operation.id)
+      setRequestedOperationId(operation.id)
       queryClient.setQueryData(
         ['updates', 'operations', operation.id],
         operation
