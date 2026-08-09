@@ -15,6 +15,7 @@ Type=notify
 NotifyAccess=main
 User=root
 Group=ov-dash
+Environment=DOCKER_CONFIG=/tmp/ov-dash-docker
 EnvironmentFile=/etc/ov-dash/updater.env
 WorkingDirectory=/opt/ov-dash
 RuntimeDirectory=ov-dash
