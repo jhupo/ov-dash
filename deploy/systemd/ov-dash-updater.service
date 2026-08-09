@@ -6,7 +6,7 @@ After=docker.service network-online.target
 Before=ov-dash-compose.service
 Wants=network-online.target
 PartOf=docker.service
-ConditionPathIsExecutable=/usr/local/libexec/ov-dash-updater
+ConditionFileIsExecutable=/usr/local/libexec/ov-dash-updater
 ConditionPathExists=/etc/ov-dash/release.pub
 ConditionPathExists=/var/lib/ov-dash/updater/deployment.json
 
