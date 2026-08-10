@@ -75,6 +75,7 @@ type Context struct {
 	PublicRouter      chi.Router
 	ProtectedRouter   chi.Router
 	RequireCapability func(capability.Capability) func(http.Handler) http.Handler
+	RequestShutdown   func()
 }
 
 type JobHandler interface {

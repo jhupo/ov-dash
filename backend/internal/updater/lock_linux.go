@@ -3,48 +3,32 @@
 package updater
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-type linuxOperationLock struct {
+type runtimeLock struct {
 	file *os.File
 }
 
-func acquireOperationLock(path, owner string) (operationLock, error) {
+func acquireRuntimeLock(path string) (*runtimeLock, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open update operation lock: %w", err)
+		return nil, fmt.Errorf("open update lock: %w", err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return nil, ErrOperationActive
-		}
-		return nil, fmt.Errorf("lock update operation: %w", err)
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("acquire update lock: %w", err)
 	}
-	if err := file.Truncate(0); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = file.Close()
-		return nil, err
-	}
-	if _, err := file.WriteAt([]byte(owner+"\n"), 0); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = file.Close()
-		return nil, err
-	}
-	if err := file.Sync(); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = file.Close()
-		return nil, err
-	}
-	return &linuxOperationLock{file: file}, nil
+	return &runtimeLock{file: file}, nil
 }
 
-func (l *linuxOperationLock) Release() error {
-	unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-	closeErr := l.file.Close()
-	return errors.Join(unlockErr, closeErr)
+func (l *runtimeLock) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	_ = unix.Flock(int(l.file.Fd()), unix.LOCK_UN)
+	return l.file.Close()
 }

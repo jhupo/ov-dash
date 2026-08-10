@@ -1,42 +1,35 @@
 # ov-dash backend
 
-Go API and worker foundation for ov-dash.
+The backend is one application process with a stable release launcher.
 
-## Services
+## Entrypoints
 
-- `cmd/api`: HTTP API with health probes and job enqueue endpoint.
-- `cmd/worker`: River/PostgreSQL worker runner with module-registered handlers.
-- `cmd/migrate`: exclusive versioned migration, secret backfill, and key rotation entrypoint.
+- `cmd/app`: HTTP API, River worker, outbox dispatcher, and frontend static serving.
+- `cmd/launcher`: initializes `app_runtime`, runs migrations, activates a pending release, and executes the current app.
+- `cmd/migrate`: advisory-locked versioned migrations, secret backfill, and key rotation.
 - `cmd/bootstrap-admin`: explicit first-administrator bootstrap.
-- `cmd/updater`: host-side signed release controller.
-- `internal/platform`: shared backend runtime that wires core infrastructure for all modules.
-- `internal/cache`: Redis-backed cache facade with namespaced keys.
-- `internal/config`: environment-driven configuration.
-- `internal/database`: database management helpers, including SQL migration execution.
-- `internal/db`: PostgreSQL pool.
-- `internal/events`: in-process event bus and durable PostgreSQL outbox.
-- `internal/queue`: River queue client plus durable job audit, logs, cancellation, and requeue.
-- `internal/modules/proxy`: SOCKS5 proxy settings and reusable proxied HTTP client factory.
-- `internal/worker`: module job dispatch, worker heartbeat, and outbox delivery.
 
-## Foundation modules
+## Platform
 
-API and Worker build the same immutable module catalog through `platform/app.Open(ctx, cfg)`. New services implement the platform `Module` contract and register HTTP routes, jobs, events, capabilities, settings, and health checks from one composition root.
+Modules implement the platform `Module` contract and register HTTP routes, jobs, events, capabilities, settings, and health checks through one catalog.
 
-- `Runtime.DB`: PostgreSQL pool for repositories and migrations.
-- `Runtime.Cache`: Redis cache facade for short-lived shared state.
+- `Runtime.DB`: PostgreSQL repositories and migration state.
+- `Runtime.Cache`: Redis cache.
 - `Runtime.Queue`: River/PostgreSQL job platform.
-- `Runtime.Events`: synchronous in-process event delivery.
-- `Runtime.Outbox`: durable transactional event delivery.
-- `Runtime.Secrets`: encrypted keyring-backed secret store.
-- `Runtime.Logger`: structured Zap logger.
+- `Runtime.Events`: synchronous process-local events.
+- `Runtime.Outbox`: durable transactional events.
+- `Runtime.Secrets`: encrypted keyring-backed secret storage.
+- `Runtime.Lifecycle`: coordinated application shutdown.
 
-Application migrations never run inside API or Worker. Run `cmd/migrate` before starting either process.
+`internal/updater` handles signed package discovery, download, verification, staging, and launcher activation. It does not control Docker or use a host Unix socket.
 
 ## Local run
 
+Start PostgreSQL and Redis, then:
+
 ```powershell
-go mod tidy
-go run ./cmd/api
-go run ./cmd/worker
+go run ./cmd/migrate
+go run ./cmd/app
 ```
+
+Set `FRONTEND_DIR` to a built frontend directory when the Go app should serve the UI locally.

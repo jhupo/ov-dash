@@ -5,9 +5,13 @@ export type InstalledRelease = {
   version: string
   sequence: number
   schema: number
-  images: Record<string, string>
-  release_env?: string
   committed_at: string
+}
+
+export type ReleaseArtifact = {
+  filename: string
+  checksum_filename: string
+  signature_filename: string
 }
 
 export type ReleaseCandidate = {
@@ -16,19 +20,11 @@ export type ReleaseCandidate = {
   version: string
   sequence: number
   published_at: string
-  expires_at: string
   minimum_version: string
-  images: Record<string, string>
+  artifacts: Record<string, ReleaseArtifact>
   database: {
     from_schema: number
     to_schema: number
-    strategy: string
-    transactional: boolean
-    backup_required: boolean
-  }
-  health: {
-    timeout_seconds: number
-    stability_seconds: number
   }
 }
 
@@ -36,18 +32,9 @@ export type UpdateOperationState =
   | 'requested'
   | 'downloaded'
   | 'verified'
-  | 'preflight'
-  | 'quiescing'
-  | 'backup'
-  | 'migrating'
   | 'switching'
-  | 'health_checking'
   | 'committed'
-  | 'rolling_back'
-  | 'rolled_back'
   | 'failed'
-  | 'rollback_failed'
-  | 'manual_intervention'
 
 export type UpdateOperation = {
   id: string
@@ -57,7 +44,6 @@ export type UpdateOperation = {
   created_at: string
   updated_at: string
   last_error?: string
-  recovery_reason?: string
 }
 
 export type UpdateStatusResponse = {

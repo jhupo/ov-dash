@@ -78,8 +78,13 @@ func NewRouter(application *platformapp.Application) http.Handler {
 			PublicRouter:      r,
 			ProtectedRouter:   protectedRouter,
 			RequireCapability: requireCapability,
+			RequestShutdown:   runtime.Lifecycle.RequestShutdown,
 		})
 	})
+	if runtime.Config.HTTP.FrontendDir != "" {
+		spa := newSPAHandler(runtime.Config.HTTP.FrontendDir)
+		r.NotFound(spa.ServeHTTP)
+	}
 
 	return r
 }

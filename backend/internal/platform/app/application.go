@@ -63,6 +63,7 @@ func ModuleContext(runtime *platform.Runtime) platformmodule.Context {
 	return platformmodule.Context{
 		Config: runtime.Config, DB: runtime.DB, Queue: runtime.Queue, Cache: runtime.Cache,
 		Events: runtime.Events, Outbox: runtime.Outbox, Logger: runtime.Logger, Secrets: runtime.Secrets, Audit: runtime.Audit,
+		RequestShutdown: runtime.Lifecycle.RequestShutdown,
 	}
 }
 

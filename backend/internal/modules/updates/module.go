@@ -1,14 +1,17 @@
 package updates
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"ov-dash/backend/internal/platform/capability"
 	"ov-dash/backend/internal/platform/httpx"
 	platformmodule "ov-dash/backend/internal/platform/module"
+	platformsettings "ov-dash/backend/internal/platform/settings"
 	"ov-dash/backend/internal/updater"
 
 	"github.com/go-chi/chi/v5"
@@ -19,7 +22,8 @@ const maxApplyRequestBytes = 4096
 type Module struct{}
 
 type Handler struct {
-	service *Service
+	service *updater.Service
+	initErr error
 }
 
 func NewModule() Module {
@@ -30,7 +34,7 @@ func (Module) Manifest() platformmodule.Manifest {
 	return platformmodule.Manifest{
 		ID:          "updates",
 		Title:       "Updates",
-		Description: "Signed platform release checks and update operations.",
+		Description: "Signed application package updates.",
 		Kind:        "platform",
 		Tags:        []string{"platform", "deploy", "maintenance"},
 	}
@@ -40,8 +44,42 @@ func (Module) Register(registrar *platformmodule.Registrar) error {
 	if err := registrar.Capabilities(capability.UpdatesRead, capability.UpdatesApply); err != nil {
 		return err
 	}
+	proxyURLSetting := platformsettings.Schema{
+		Key:      "update.proxy_url",
+		Type:     platformsettings.TypeString,
+		Default:  registrar.Context().Config.Update.ProxyURL,
+		Writable: true,
+		Validation: platformsettings.Validation{
+			MaxLength: intPointer(2048),
+			Pattern:   `^$|^https://[^\s]+$`,
+		},
+	}
+	if err := registrar.Settings(proxyURLSetting); err != nil {
+		return err
+	}
 	return registrar.HTTP(func(ctx platformmodule.Context) {
-		handler := &Handler{service: NewService(ctx.Config.Update.SocketPath, nil)}
+		settingsStore := platformsettings.NewStore(ctx.DB, ctx.Secrets)
+		resolveProxy := func(requestContext context.Context) (string, error) {
+			value, err := settingsStore.Get(requestContext, proxyURLSetting)
+			if err != nil {
+				return "", err
+			}
+			proxyURL, _ := value.Value.(string)
+			proxyURL = strings.TrimSpace(proxyURL)
+			if proxyURL == "" {
+				proxyURL = ctx.Config.Update.ProxyURL
+			}
+			return strings.TrimSpace(proxyURL), nil
+		}
+		service, err := updater.NewService(updater.ServiceConfig{
+			RuntimeDir:        ctx.Config.Update.RuntimeDir,
+			ReleaseRepository: ctx.Config.Update.ReleaseRepository,
+			PublicKey:         ctx.Config.Update.PublicKey,
+			ExitDelay:         ctx.Config.Update.ExitDelay,
+			ResolveProxy:      resolveProxy,
+			RequestShutdown:   ctx.RequestShutdown,
+		})
+		handler := &Handler{service: service, initErr: err}
 		readUpdates := ctx.RequireCapability(capability.UpdatesRead)
 		applyUpdates := ctx.RequireCapability(capability.UpdatesApply)
 
@@ -49,12 +87,14 @@ func (Module) Register(registrar *platformmodule.Registrar) error {
 		ctx.ProtectedRouter.With(readUpdates).Post("/updates/check", handler.Check)
 		ctx.ProtectedRouter.With(applyUpdates).Post("/updates/apply", handler.Apply)
 		ctx.ProtectedRouter.With(readUpdates).Get("/updates/operations/{id}", handler.Operation)
-		ctx.ProtectedRouter.With(readUpdates).Get("/updates/operations/{id}/events", handler.OperationEvents)
 	})
 }
 
-func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
-	result, err := h.service.Status(r.Context())
+func (h *Handler) Status(w http.ResponseWriter, _ *http.Request) {
+	if !h.available(w) {
+		return
+	}
+	result, err := h.service.Status()
 	if err != nil {
 		writeServiceError(w, err, "update_status_failed")
 		return
@@ -63,6 +103,9 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
+	if !h.available(w) {
+		return
+	}
 	result, err := h.service.Check(r.Context())
 	if err != nil {
 		writeServiceError(w, err, "update_check_failed")
@@ -72,6 +115,9 @@ func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
+	if !h.available(w) {
+		return
+	}
 	var payload struct {
 		ReleaseID string `json:"release_id"`
 	}
@@ -79,10 +125,6 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil || ensureJSONEOF(decoder) != nil {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
-		return
-	}
-	if err := updater.ValidateReleaseID(payload.ReleaseID); err != nil {
-		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_release_id"})
 		return
 	}
 	result, err := h.service.Apply(r.Context(), payload.ReleaseID)
@@ -94,48 +136,36 @@ func (h *Handler) Apply(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Operation(w http.ResponseWriter, r *http.Request) {
-	result, err := h.service.Operation(r.Context(), chi.URLParam(r, "id"))
+	if !h.available(w) {
+		return
+	}
+	result, err := h.service.Operation(chi.URLParam(r, "id"))
 	if err != nil {
-		if errors.Is(err, ErrInvalidOperation) {
-			httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_operation_id"})
-			return
-		}
 		writeServiceError(w, err, "update_operation_failed")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
-func (h *Handler) OperationEvents(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.OperationEvents(r.Context(), chi.URLParam(r, "id"))
-	if err != nil {
-		if errors.Is(err, ErrInvalidOperation) {
-			httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_operation_id"})
-			return
-		}
-		writeServiceError(w, err, "update_operation_events_failed")
-		return
+func (h *Handler) available(w http.ResponseWriter) bool {
+	if h.initErr == nil && h.service != nil {
+		return true
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+	httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "update_service_unavailable"})
+	return false
 }
 
 func writeServiceError(w http.ResponseWriter, err error, fallbackCode string) {
 	status := http.StatusBadGateway
 	code := fallbackCode
-	var apiError *APIError
-	if errors.As(err, &apiError) {
-		switch apiError.StatusCode {
-		case http.StatusBadRequest:
-			status = http.StatusBadRequest
-		case http.StatusNotFound:
-			status = http.StatusNotFound
-			code = "update_operation_not_found"
-		case http.StatusConflict:
-			status = http.StatusConflict
-			code = "update_operation_conflict"
-		}
+	switch {
+	case errors.Is(err, updater.ErrOperationActive), errors.Is(err, updater.ErrReleaseMismatch):
+		status = http.StatusConflict
+	case errors.Is(err, updater.ErrOperationNotFound):
+		status = http.StatusNotFound
+		code = "update_operation_not_found"
 	}
-	httpx.WriteJSON(w, status, map[string]string{"error": code})
+	httpx.WriteJSON(w, status, map[string]string{"error": code, "message": err.Error()})
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
@@ -146,4 +176,8 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 		return err
 	}
 	return nil
+}
+
+func intPointer(value int) *int {
+	return &value
 }

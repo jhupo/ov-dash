@@ -22,20 +22,11 @@ import {
 
 const operationProgress: Record<UpdateOperationState, number> = {
   requested: 5,
-  downloaded: 15,
-  verified: 25,
-  preflight: 35,
-  quiescing: 45,
-  backup: 55,
-  migrating: 65,
-  switching: 75,
-  health_checking: 90,
+  downloaded: 35,
+  verified: 65,
+  switching: 85,
   committed: 100,
-  rolling_back: 75,
-  rolled_back: 100,
   failed: 100,
-  rollback_failed: 100,
-  manual_intervention: 100,
 }
 
 export function UpdateSwitch() {
@@ -237,7 +228,7 @@ function UpdateProgress({ operation }: { operation: UpdateOperation }) {
       </div>
       {isError && (
         <div className='max-h-20 overflow-auto rounded-md bg-destructive/10 p-2 text-xs text-destructive'>
-          {operation.last_error || operation.recovery_reason || '更新未完成'}
+          {operation.last_error || '更新未完成'}
         </div>
       )}
     </div>
@@ -246,13 +237,7 @@ function UpdateProgress({ operation }: { operation: UpdateOperation }) {
 
 function isTerminalOperation(operation?: UpdateOperation | null) {
   return operation
-    ? [
-        'committed',
-        'rolled_back',
-        'failed',
-        'rollback_failed',
-        'manual_intervention',
-      ].includes(operation.state)
+    ? ['committed', 'failed'].includes(operation.state)
     : false
 }
 
@@ -261,12 +246,7 @@ function isActiveOperation(operation?: UpdateOperation | null) {
 }
 
 function isFailedOperation(operation: UpdateOperation) {
-  return [
-    'rolled_back',
-    'failed',
-    'rollback_failed',
-    'manual_intervention',
-  ].includes(operation.state)
+  return operation.state === 'failed'
 }
 
 function statusText(state: UpdateOperationState) {
@@ -274,18 +254,9 @@ function statusText(state: UpdateOperationState) {
     requested: '等待执行',
     downloaded: '已下载发布包',
     verified: '签名验证完成',
-    preflight: '正在预检',
-    quiescing: '正在进入维护模式',
-    backup: '正在备份',
-    migrating: '正在迁移数据库',
     switching: '正在切换版本',
-    health_checking: '正在检查服务健康',
     committed: '更新完成',
-    rolling_back: '正在回滚',
-    rolled_back: '已回滚到旧版本',
     failed: '更新失败',
-    rollback_failed: '回滚失败',
-    manual_intervention: '需要人工处理',
   }
   return labels[state]
 }

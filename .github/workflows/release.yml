@@ -14,17 +14,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    name: Test
+  prerequisite:
+    name: CI Prerequisite
     uses: ./.github/workflows/ci.yml
 
-  build-backend:
-    name: Build Backend
-    needs: test
+  release-info:
+    name: Validate Release Tag
+    needs: prerequisite
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Resolve release version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          validate_release_version() {
+            local value="$1" prerelease identifier
+            [[ "${value}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || return 1
+            if [[ "${value}" == *-* ]]; then
+              prerelease="${value#*-}"
+              IFS='.' read -ra identifiers <<<"${prerelease}"
+              for identifier in "${identifiers[@]}"; do
+                if [[ "${identifier}" =~ ^[0-9]+$ && "${identifier}" != "0" && "${identifier}" == 0* ]]; then
+                  return 1
+                fi
+              done
+            fi
+          }
+
+          if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]] || ! validate_release_version "${VERSION}"; then
+            echo "release tag must be strict SemVer without numeric prerelease leading zeros" >&2
+            exit 1
+          fi
+
+          printf 'version=%s\n' "${VERSION}" >> "${GITHUB_OUTPUT}"
+
+  release-assets:
+    name: Build Release Assets
+    needs: release-info
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,15 +67,49 @@ jobs:
           go-version: '1.23.x'
           cache-dependency-path: backend/go.sum
 
-      - name: Build release archives
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.23.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build application packages
         shell: bash
         env:
-          CGO_ENABLED: '0'
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.RELEASE_ED25519_PRIVATE_KEY }}
+          RELEASE_VERSION: ${{ needs.release-info.outputs.version }}
+          RELEASE_SEQUENCE: ${{ github.run_number }}
+          CONFIGURED_MINIMUM_VERSION: ${{ vars.UPDATE_MINIMUM_VERSION }}
+          CONFIGURED_MINIMUM_SCHEMA: ${{ vars.UPDATE_MINIMUM_SCHEMA }}
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_TAG#v}"
+
+          DIST_DIR="${GITHUB_WORKSPACE}/dist"
+          STAGING_DIR="${DIST_DIR}/staging"
+          RELEASE_ID="ov-dash-${RELEASE_VERSION}"
+          PUBLISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          MINIMUM_VERSION="${CONFIGURED_MINIMUM_VERSION:-0.0.0}"
+          FROM_SCHEMA="${CONFIGURED_MINIMUM_SCHEMA:-0}"
+          TO_SCHEMA="$(
+            find backend/migrations -maxdepth 1 -type f -printf '%f\n' \
+              | sed -nE 's/^([0-9]+)_.*\.sql$/\1/p' \
+              | sort -n \
+              | tail -n 1 \
+              | sed -E 's/^0+//'
+          )"
+          TO_SCHEMA="${TO_SCHEMA:-0}"
+
           validate_release_version() {
             local value="$1" prerelease identifier
             [[ "${value}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || return 1
@@ -57,141 +123,179 @@ jobs:
               done
             fi
           }
-          if [[ "${RELEASE_TAG}" != "v${VERSION}" ]] || ! validate_release_version "${VERSION}"; then
-            echo "release tag must be strict SemVer without numeric prerelease leading zeros" >&2
+
+          validate_release_version "${MINIMUM_VERSION}" || {
+            echo "UPDATE_MINIMUM_VERSION must be strict SemVer" >&2
             exit 1
-          fi
-          test -n "${RELEASE_ED25519_PRIVATE_KEY}"
-          targets=(
-            "linux amd64 linux-amd64 "
-            "linux arm64 linux-arm64 "
-            "darwin amd64 darwin-amd64 "
-            "darwin arm64 darwin-arm64 "
-            "windows amd64 windows-amd64 .exe"
+          }
+          [[ "${FROM_SCHEMA}" =~ ^(0|[1-9][0-9]*)$ ]] || {
+            echo "UPDATE_MINIMUM_SCHEMA must be a non-negative integer" >&2
+            exit 1
+          }
+          (( FROM_SCHEMA <= TO_SCHEMA )) || {
+            echo "UPDATE_MINIMUM_SCHEMA cannot exceed the release schema" >&2
+            exit 1
+          }
+
+          mkdir -p "${STAGING_DIR}"
+
+          DIST_DIR="${DIST_DIR}" \
+          RELEASE_ID="${RELEASE_ID}" \
+          PUBLISHED_AT="${PUBLISHED_AT}" \
+          MINIMUM_VERSION="${MINIMUM_VERSION}" \
+          FROM_SCHEMA="${FROM_SCHEMA}" \
+          TO_SCHEMA="${TO_SCHEMA}" \
+          node <<'NODE'
+          const fs = require('fs')
+          const path = require('path')
+
+          const artifact = (arch) => {
+            const filename = `ov-dash_${process.env.RELEASE_VERSION}_linux_${arch}.tar.gz`
+            return {
+              filename,
+              checksum_filename: `${filename}.sha256`,
+              signature_filename: `${filename}.sha256.sig`,
+            }
+          }
+
+          const release = {
+            schema_version: 1,
+            release_id: process.env.RELEASE_ID,
+            version: process.env.RELEASE_VERSION,
+            sequence: Number(process.env.RELEASE_SEQUENCE),
+            published_at: process.env.PUBLISHED_AT,
+            minimum_version: process.env.MINIMUM_VERSION,
+            database: {
+              from_schema: Number(process.env.FROM_SCHEMA),
+              to_schema: Number(process.env.TO_SCHEMA),
+            },
+            artifacts: {
+              linux_amd64: artifact('amd64'),
+              linux_arm64: artifact('arm64'),
+            },
+          }
+
+          fs.writeFileSync(
+            path.join(process.env.DIST_DIR, 'release.json'),
+            `${JSON.stringify(release, null, 2)}\n`,
           )
-          for target in "${targets[@]}"; do
-            read -r goos goarch suffix ext <<<"${target}"
-            package="ov-dash-${VERSION}-${suffix}"
-            mkdir -p "../dist/${package}"
-            GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "../dist/${package}/ov-dash-api${ext}" ./cmd/api
-            GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "../dist/${package}/ov-dash-worker${ext}" ./cmd/worker
-            GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "../dist/${package}/ov-dash-migrate${ext}" ./cmd/migrate
-            GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "../dist/${package}/ov-dash-bootstrap-admin${ext}" ./cmd/bootstrap-admin
-            if [[ "${goos}" == "linux" ]]; then
-              GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "../dist/${package}/ov-dash-updater" ./cmd/updater
-              mkdir -p "../dist/${package}/deploy/scripts" "../dist/${package}/deploy/systemd"
-              cp ../deploy/scripts/install-updater.sh "../dist/${package}/deploy/scripts/install-updater.sh"
-              cp ../deploy/systemd/ov-dash-updater.service "../dist/${package}/deploy/systemd/ov-dash-updater.service"
-              cp ../deploy/systemd/ov-dash-compose.service "../dist/${package}/deploy/systemd/ov-dash-compose.service"
-              cp ../deploy/README.md "../dist/${package}/deploy/README.md"
-
-              PACKAGE_DIR="../dist/${package}" HOST_ARCH="${goarch}" VERSION="${VERSION}" node <<'NODE'
-              const crypto = require('crypto')
-              const fs = require('fs')
-              const path = require('path')
-
-              const artifactPaths = [
-                'ov-dash-updater',
-                'deploy/systemd/ov-dash-updater.service',
-                'deploy/systemd/ov-dash-compose.service',
-              ]
-              const artifacts = Object.fromEntries(artifactPaths.map((name) => [
-                name,
-                crypto.createHash('sha256').update(fs.readFileSync(path.join(process.env.PACKAGE_DIR, name))).digest('hex'),
-              ]))
-              const manifest = {
-                schema_version: 1,
-                version: process.env.VERSION,
-                architecture: process.env.HOST_ARCH,
-                artifacts,
-              }
-              const manifestPath = path.join(process.env.PACKAGE_DIR, 'host-artifacts.json')
-              const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
-              fs.writeFileSync(manifestPath, manifestBytes)
-
-              const secret = process.env.RELEASE_ED25519_PRIVATE_KEY.trim()
-              let keyData = secret
-              let keyOptions
-              if (!secret.includes('-----BEGIN')) {
-                const decoded = Buffer.from(secret, 'base64')
-                if (decoded.toString('utf8').includes('-----BEGIN')) {
-                  keyData = decoded
-                } else {
-                  keyOptions = { key: decoded, format: 'der', type: 'pkcs8' }
-                }
-              }
-              const privateKey = crypto.createPrivateKey(keyOptions ?? keyData)
-              if (privateKey.asymmetricKeyType !== 'ed25519') {
-                throw new Error('RELEASE_ED25519_PRIVATE_KEY is not an Ed25519 private key')
-              }
-              const signature = crypto.sign(null, manifestBytes, privateKey)
-              fs.writeFileSync(`${manifestPath}.sig`, `${signature.toString('base64')}\n`)
           NODE
-            fi
-            cp -R migrations "../dist/${package}/migrations"
-            cp README.md "../dist/${package}/README-backend.md"
-          done
-          cd ../dist
-          zip -r "ov-dash-${VERSION}-windows-amd64.zip" "ov-dash-${VERSION}-windows-amd64"
-          tar -czf "ov-dash-${VERSION}-linux-amd64.tar.gz" "ov-dash-${VERSION}-linux-amd64"
-          tar -czf "ov-dash-${VERSION}-linux-arm64.tar.gz" "ov-dash-${VERSION}-linux-arm64"
-          tar -czf "ov-dash-${VERSION}-darwin-amd64.tar.gz" "ov-dash-${VERSION}-darwin-amd64"
-          tar -czf "ov-dash-${VERSION}-darwin-arm64.tar.gz" "ov-dash-${VERSION}-darwin-arm64"
 
-      - name: Upload artifact
+          for arch in amd64 arm64; do
+            asset="ov-dash_${RELEASE_VERSION}_linux_${arch}"
+            package_root="${STAGING_DIR}/${asset}"
+            mkdir -p "${package_root}/bin" "${package_root}/web" "${package_root}/migrations"
+
+            (
+              cd backend
+              CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+                go build -trimpath -ldflags="-s -w -X main.version=${RELEASE_VERSION}" \
+                -o "${package_root}/bin/app" ./cmd/app
+              CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+                go build -trimpath -ldflags="-s -w -X main.version=${RELEASE_VERSION}" \
+                -o "${package_root}/bin/migrate" ./cmd/migrate
+              CGO_ENABLED=0 GOOS=linux GOARCH="${arch}" \
+                go build -trimpath -ldflags="-s -w -X main.version=${RELEASE_VERSION}" \
+                -o "${package_root}/bin/bootstrap-admin" ./cmd/bootstrap-admin
+            )
+
+            cp -a frontend/dist/. "${package_root}/web/"
+            cp -a backend/migrations/. "${package_root}/migrations/"
+
+            PACKAGE_ROOT="${package_root}" \
+            TARGET_ARCH="${arch}" \
+            RELEASE_PATH="${DIST_DIR}/release.json" \
+            node <<'NODE'
+          const fs = require('fs')
+          const path = require('path')
+
+          const release = JSON.parse(fs.readFileSync(process.env.RELEASE_PATH, 'utf8'))
+          const manifest = { ...release, architecture: process.env.TARGET_ARCH }
+
+          fs.writeFileSync(
+            path.join(process.env.PACKAGE_ROOT, 'manifest.json'),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          )
+          NODE
+
+            tar -C "${package_root}" -czf "${DIST_DIR}/${asset}.tar.gz" .
+          done
+
+          cd "${DIST_DIR}"
+          for archive in ov-dash_*_linux_*.tar.gz; do
+            sha256sum "${archive}" > "${archive}.sha256"
+          done
+
+      - name: Sign release metadata and package checksums
+        shell: bash
+        env:
+          RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.RELEASE_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${RELEASE_ED25519_PRIVATE_KEY}"
+
+          node <<'NODE'
+          const crypto = require('crypto')
+          const fs = require('fs')
+          const path = require('path')
+
+          const secret = process.env.RELEASE_ED25519_PRIVATE_KEY.trim()
+          let keyData = secret
+          let keyOptions
+          if (!secret.includes('-----BEGIN')) {
+            const decoded = Buffer.from(secret, 'base64')
+            if (decoded.toString('utf8').includes('-----BEGIN')) {
+              keyData = decoded
+            } else {
+              keyOptions = { key: decoded, format: 'der', type: 'pkcs8' }
+            }
+          }
+
+          const privateKey = crypto.createPrivateKey(keyOptions ?? keyData)
+          if (privateKey.asymmetricKeyType !== 'ed25519') {
+            throw new Error('RELEASE_ED25519_PRIVATE_KEY is not an Ed25519 private key')
+          }
+
+          const checksumFiles = fs.readdirSync('dist')
+            .filter((name) => name.endsWith('.tar.gz.sha256'))
+            .sort()
+          if (checksumFiles.length !== 2) {
+            throw new Error(`expected two package checksums, found ${checksumFiles.length}`)
+          }
+
+          for (const name of [...checksumFiles, 'release.json']) {
+            const sourcePath = path.join('dist', name)
+            const signature = crypto.sign(null, fs.readFileSync(sourcePath), privateKey)
+            if (signature.length !== 64) {
+              throw new Error(`unexpected Ed25519 signature size for ${name}`)
+            }
+            fs.writeFileSync(`${sourcePath}.sig`, `${signature.toString('base64')}\n`)
+          }
+          NODE
+
+      - name: Upload release assets
         uses: actions/upload-artifact@v4
         with:
           name: ov-dash-${{ github.ref_name }}-release-assets
           path: |
             dist/*.tar.gz
-            dist/*.zip
+            dist/*.tar.gz.sha256
+            dist/*.tar.gz.sha256.sig
+            dist/release.json
+            dist/release.json.sig
           if-no-files-found: error
+          retention-days: 7
 
-  docker-images:
-    name: Build Docker Images
-    needs: test
+  runtime-image:
+    name: Build Runtime Image
+    needs: release-info
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: backend
-            dockerfile: deploy/docker/backend.Dockerfile
-            image: ghcr.io/${{ github.repository }}-backend
-          - name: frontend
-            dockerfile: deploy/docker/frontend.Dockerfile
-            image: ghcr.io/${{ github.repository }}-frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Resolve release version
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          validate_release_version() {
-            local value="$1" prerelease identifier
-            [[ "${value}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || return 1
-            if [[ "${value}" == *-* ]]; then
-              prerelease="${value#*-}"
-              IFS='.' read -ra identifiers <<<"${prerelease}"
-              for identifier in "${identifiers[@]}"; do
-                if [[ "${identifier}" =~ ^[0-9]+$ && "${identifier}" != "0" && "${identifier}" == 0* ]]; then
-                  return 1
-                fi
-              done
-            fi
-          }
-          if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]] || ! validate_release_version "${VERSION}"; then
-            echo "release tag must be strict SemVer without numeric prerelease leading zeros" >&2
-            exit 1
-          fi
-          printf 'version=%s\n' "${VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -206,284 +310,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.name }} image
-        id: build
+      - name: Build and push runtime image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: deploy/docker/backend.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ matrix.image }}:${{ steps.release.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository }}-runtime:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}-runtime:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
-            APP_VERSION=${{ steps.release.outputs.version }}
-
-      - name: Record ${{ matrix.name }} digest
-        shell: bash
-        env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          set -euo pipefail
-          test "${IMAGE_DIGEST}" != ""
-          mkdir -p dist
-          printf '%s' "${IMAGE_DIGEST}" > "dist/${{ matrix.name }}.digest"
-
-      - name: Upload ${{ matrix.name }} digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-digest-${{ matrix.name }}-${{ github.ref_name }}
-          path: dist/${{ matrix.name }}.digest
-          if-no-files-found: error
-
-  signed-release:
-    name: Sign Release Manifest
-    needs: docker-images
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout full history
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download image digests
-        uses: actions/download-artifact@v4
-        with:
-          path: dist/digests
-          merge-multiple: true
-          pattern: image-digest-*-${{ github.ref_name }}
-
-      - name: Generate and sign release manifest
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          SEQUENCE: ${{ github.run_number }}
-          RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.RELEASE_ED25519_PRIVATE_KEY }}
-          CONFIGURED_MINIMUM_VERSION: ${{ vars.UPDATE_MINIMUM_VERSION }}
-          CONFIGURED_MINIMUM_SCHEMA: ${{ vars.UPDATE_MINIMUM_SCHEMA }}
-        run: |
-          set -euo pipefail
-          VERSION="${RELEASE_TAG#v}"
-          validate_release_version() {
-            local value="$1" prerelease identifier
-            [[ "${value}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || return 1
-            if [[ "${value}" == *-* ]]; then
-              prerelease="${value#*-}"
-              IFS='.' read -ra identifiers <<<"${prerelease}"
-              for identifier in "${identifiers[@]}"; do
-                if [[ "${identifier}" =~ ^[0-9]+$ && "${identifier}" != "0" && "${identifier}" == 0* ]]; then
-                  return 1
-                fi
-              done
-            fi
-          }
-          if [[ "${RELEASE_TAG}" != "v${VERSION}" ]] || ! validate_release_version "${VERSION}"; then
-            echo "release tag must be strict SemVer without numeric prerelease leading zeros" >&2
-            exit 1
-          fi
-          test -n "${RELEASE_ED25519_PRIVATE_KEY}"
-
-          migration_schema_at_ref() {
-            git ls-tree -r --name-only "$1" -- backend/migrations \
-              | sed -nE 's#^backend/migrations/([0-9]+)_.*\.sql$#\1#p' \
-              | sort -n \
-              | tail -n 1 \
-              | sed -E 's/^0+//'
-          }
-
-          MINIMUM_VERSION="${CONFIGURED_MINIMUM_VERSION:-0.0.0}"
-          FROM_SCHEMA="${CONFIGURED_MINIMUM_SCHEMA:-0}"
-          validate_release_version "${MINIMUM_VERSION}" || {
-            echo "UPDATE_MINIMUM_VERSION must be strict SemVer" >&2
-            exit 1
-          }
-          [[ "${FROM_SCHEMA}" =~ ^(0|[1-9][0-9]*)$ ]] || {
-            echo "UPDATE_MINIMUM_SCHEMA must be a non-negative integer" >&2
-            exit 1
-          }
-          TO_SCHEMA="$(migration_schema_at_ref HEAD)"
-          TO_SCHEMA="${TO_SCHEMA:-0}"
-          (( FROM_SCHEMA <= TO_SCHEMA )) || {
-            echo "UPDATE_MINIMUM_SCHEMA cannot exceed the release schema" >&2
-            exit 1
-          }
-
-          BACKEND_DIGEST="$(tr -d '\r\n' < dist/digests/backend.digest)"
-          FRONTEND_DIGEST="$(tr -d '\r\n' < dist/digests/frontend.digest)"
-          [[ "${BACKEND_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
-          [[ "${FRONTEND_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]
-          REPOSITORY="${GITHUB_REPOSITORY,,}"
-          BACKEND_IMAGE="ghcr.io/${REPOSITORY}-backend@${BACKEND_DIGEST}"
-          FRONTEND_IMAGE="ghcr.io/${REPOSITORY}-frontend@${FRONTEND_DIGEST}"
-          PUBLISHED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          EXPIRES_AT="$(date -u -d '+90 days' +'%Y-%m-%dT%H:%M:%SZ')"
-          RELEASE_ID="ov-dash-${VERSION}"
-
-          export VERSION SEQUENCE MINIMUM_VERSION FROM_SCHEMA TO_SCHEMA
-          export BACKEND_IMAGE FRONTEND_IMAGE PUBLISHED_AT EXPIRES_AT RELEASE_ID
-          mkdir -p "dist/signed/${RELEASE_ID}"
-          node <<'NODE'
-          const crypto = require('crypto')
-          const fs = require('fs')
-
-          const manifest = {
-            schema_version: 1,
-            release_id: process.env.RELEASE_ID,
-            version: process.env.VERSION,
-            sequence: Number(process.env.SEQUENCE),
-            published_at: process.env.PUBLISHED_AT,
-            expires_at: process.env.EXPIRES_AT,
-            minimum_version: process.env.MINIMUM_VERSION,
-            images: {
-              backend: process.env.BACKEND_IMAGE,
-              frontend: process.env.FRONTEND_IMAGE,
-            },
-            database: {
-              from_schema: Number(process.env.FROM_SCHEMA),
-              to_schema: Number(process.env.TO_SCHEMA),
-              strategy: 'snapshot',
-              transactional: false,
-              backup_required: true,
-            },
-            health: {
-              timeout_seconds: 300,
-              stability_seconds: 15,
-            },
-          }
-
-          const manifestPath = `dist/signed/${process.env.RELEASE_ID}/release.json`
-          const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
-          fs.writeFileSync(manifestPath, manifestBytes)
-          fs.writeFileSync(
-            'dist/signed/latest.json',
-            `${JSON.stringify({ release_id: process.env.RELEASE_ID }, null, 2)}\n`,
-          )
-
-          const secret = process.env.RELEASE_ED25519_PRIVATE_KEY.trim()
-          let keyData = secret
-          let keyOptions
-          if (!secret.includes('-----BEGIN')) {
-            const decoded = Buffer.from(secret, 'base64')
-            if (decoded.toString('utf8').includes('-----BEGIN')) {
-              keyData = decoded
-            } else {
-              keyOptions = { key: decoded, format: 'der', type: 'pkcs8' }
-            }
-          }
-          const privateKey = crypto.createPrivateKey(keyOptions ?? keyData)
-          if (privateKey.asymmetricKeyType !== 'ed25519') {
-            throw new Error('RELEASE_ED25519_PRIVATE_KEY is not an Ed25519 private key')
-          }
-          const signature = crypto.sign(null, manifestBytes, privateKey)
-          if (signature.length !== 64) {
-            throw new Error('unexpected Ed25519 signature size')
-          }
-          fs.writeFileSync(`${manifestPath}.sig`, `${signature.toString('base64')}\n`)
-          NODE
-
-          tar -C dist/signed -czf "dist/ov-dash-${VERSION}-signed-release.tar.gz" latest.json "${RELEASE_ID}"
-
-      - name: Upload signed release
-        uses: actions/upload-artifact@v4
-        with:
-          name: ov-dash-${{ github.ref_name }}-signed-release
-          path: |
-            dist/signed/latest.json
-            dist/signed/**/release.json
-            dist/signed/**/release.json.sig
-            dist/*-signed-release.tar.gz
-          if-no-files-found: error
+            APP_VERSION=${{ needs.release-info.outputs.version }}
 
   release:
-    name: Publish Release
+    name: Publish GitHub Release
     needs:
-      - build-backend
-      - signed-release
+      - release-assets
+      - runtime-image
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout full history
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download artifacts
+      - name: Download release assets
         uses: actions/download-artifact@v4
         with:
+          name: ov-dash-${{ github.ref_name }}-release-assets
           path: dist
-          merge-multiple: true
-          pattern: ov-dash-${{ github.ref_name }}-*
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/**/*.tar.gz
-            dist/**/*.zip
-            dist/**/latest.json
-            dist/**/release.json
-            dist/**/release.json.sig
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.tar.gz.sha256.sig
+            dist/release.json
+            dist/release.json.sig
           generate_release_notes: true
-
-      - name: Publish release metadata branch
-        shell: bash
-        env:
-          METADATA_BRANCH: release-metadata
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-
-          VERSION="${RELEASE_TAG#v}"
-          EXPECTED_RELEASE_ID="ov-dash-${VERSION}"
-          mapfile -t LATEST_CANDIDATES < <(find dist -type f -name latest.json -print)
-          if (( ${#LATEST_CANDIDATES[@]} != 1 )); then
-            echo "expected exactly one latest.json, found ${#LATEST_CANDIDATES[@]}" >&2
-            exit 1
-          fi
-          LATEST_PATH="${LATEST_CANDIDATES[0]}"
-          RELEASE_ID="$(node -e '
-            const fs = require("fs")
-            const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
-            if (typeof value.release_id !== "string" || value.release_id.length === 0) process.exit(1)
-            process.stdout.write(value.release_id)
-          ' "${LATEST_PATH}")"
-          if [[ "${RELEASE_ID}" != "${EXPECTED_RELEASE_ID}" ]]; then
-            echo "latest.json release_id ${RELEASE_ID} does not match ${EXPECTED_RELEASE_ID}" >&2
-            exit 1
-          fi
-
-          mapfile -t MANIFEST_CANDIDATES < <(find dist -type f -path "*/${RELEASE_ID}/release.json" -print)
-          if (( ${#MANIFEST_CANDIDATES[@]} != 1 )); then
-            echo "expected exactly one ${RELEASE_ID}/release.json, found ${#MANIFEST_CANDIDATES[@]}" >&2
-            exit 1
-          fi
-          MANIFEST_PATH="${MANIFEST_CANDIDATES[0]}"
-          SIGNATURE_PATH="${MANIFEST_PATH}.sig"
-          test -f "${SIGNATURE_PATH}"
-
-          METADATA_DIR="${RUNNER_TEMP}/release-metadata"
-          if git ls-remote --exit-code --heads origin "${METADATA_BRANCH}" >/dev/null 2>&1; then
-            git fetch origin "${METADATA_BRANCH}"
-            git worktree add --detach "${METADATA_DIR}" FETCH_HEAD
-          else
-            git worktree add --detach "${METADATA_DIR}" HEAD
-            git -C "${METADATA_DIR}" checkout --orphan "${METADATA_BRANCH}"
-            git -C "${METADATA_DIR}" rm -rf .
-          fi
-
-          install -m 0644 "${LATEST_PATH}" "${METADATA_DIR}/latest.json"
-          install -d "${METADATA_DIR}/${RELEASE_ID}"
-          install -m 0644 "${MANIFEST_PATH}" "${METADATA_DIR}/${RELEASE_ID}/release.json"
-          install -m 0644 "${SIGNATURE_PATH}" "${METADATA_DIR}/${RELEASE_ID}/release.json.sig"
-
-          git -C "${METADATA_DIR}" config user.name "github-actions[bot]"
-          git -C "${METADATA_DIR}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C "${METADATA_DIR}" add latest.json "${RELEASE_ID}/release.json" "${RELEASE_ID}/release.json.sig"
-          if git -C "${METADATA_DIR}" diff --cached --quiet; then
-            echo "release metadata is already up to date"
-            exit 0
-          fi
-          git -C "${METADATA_DIR}" commit -m "Publish ${RELEASE_TAG} metadata"
-          git -C "${METADATA_DIR}" push origin "HEAD:${METADATA_BRANCH}"
+          fail_on_unmatched_files: true

@@ -37,6 +37,7 @@ type HTTPConfig struct {
 	AllowedOrigins      []string
 	TrustedProxyCIDRs   []string
 	SessionCookieSecure bool
+	FrontendDir         string
 }
 
 func (c HTTPConfig) Addr() string {
@@ -75,7 +76,11 @@ type WorkerConfig struct {
 }
 
 type UpdateConfig struct {
-	SocketPath string
+	RuntimeDir        string
+	ReleaseRepository string
+	ProxyURL          string
+	PublicKey         string
+	ExitDelay         time.Duration
 }
 
 type MigrationsConfig struct {
@@ -135,6 +140,7 @@ func Load() Config {
 			AllowedOrigins:      listEnv("HTTP_ALLOWED_ORIGINS", []string{"http://localhost:5173"}),
 			TrustedProxyCIDRs:   listEnv("HTTP_TRUSTED_PROXY_CIDRS", nil),
 			SessionCookieSecure: boolEnv("COOKIE_SECURE", false),
+			FrontendDir:         env("FRONTEND_DIR", ""),
 		},
 		Postgres: PostgresConfig{
 			DSN:             env("POSTGRES_DSN", "postgres://ov_dash:ov_dash@localhost:5432/ov_dash?sslmode=disable"),
@@ -156,7 +162,11 @@ func Load() Config {
 			RescueAfter: durationEnv("WORKER_RESCUE_AFTER", 15*time.Minute),
 		},
 		Update: UpdateConfig{
-			SocketPath: env("UPDATE_SOCKET_PATH", "/run/ov-dash/updater.sock"),
+			RuntimeDir:        env("UPDATE_RUNTIME_DIR", "/opt/ov-dash/runtime"),
+			ReleaseRepository: env("UPDATE_RELEASE_REPOSITORY", "jhupo/ov-dash"),
+			ProxyURL:          env("UPDATE_PROXY_URL", ""),
+			PublicKey:         env("UPDATE_PUBLIC_KEY", ""),
+			ExitDelay:         durationEnv("UPDATE_EXIT_DELAY", 2*time.Second),
 		},
 		Migrations: MigrationsConfig{
 			Dir: env("MIGRATIONS_DIR", "/migrations"),

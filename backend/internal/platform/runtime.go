@@ -27,6 +27,7 @@ type Runtime struct {
 	Audit      *audit.Recorder
 	Authorizer capability.Authorizer
 	Outbox     *events.Outbox
+	Lifecycle  *Lifecycle
 }
 
 func OpenAPI(ctx context.Context, cfg config.Config) (*Runtime, error) {
@@ -104,6 +105,7 @@ func open(ctx context.Context, cfg config.Config, withCache bool) (*Runtime, err
 		Audit:      audit.NewRecorder(pg),
 		Authorizer: capability.NewPostgresAuthorizer(pg),
 		Outbox:     events.NewOutbox(pg),
+		Lifecycle:  NewLifecycle(),
 	}, nil
 }
 

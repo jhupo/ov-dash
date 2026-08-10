@@ -3,37 +3,34 @@
 package updater
 
 import (
-	"errors"
 	"fmt"
 	"os"
+	"sync"
 )
 
-type portableOperationLock struct {
+var portableRuntimeLock sync.Mutex
+
+type runtimeLock struct {
 	file *os.File
-	path string
 }
 
-func acquireOperationLock(path, owner string) (operationLock, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return nil, ErrOperationActive
-	}
+func acquireRuntimeLock(path string) (*runtimeLock, error) {
+	portableRuntimeLock.Lock()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("create update operation lock: %w", err)
+		portableRuntimeLock.Unlock()
+		return nil, fmt.Errorf("open update lock: %w", err)
 	}
-	if _, err := file.WriteString(owner + "\n"); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return nil, err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return nil, err
-	}
-	return &portableOperationLock{file: file, path: path}, nil
+	return &runtimeLock{file: file}, nil
 }
 
-func (l *portableOperationLock) Release() error {
-	return errors.Join(l.file.Close(), os.Remove(l.path))
+func (l *runtimeLock) Close() error {
+	if l == nil {
+		return nil
+	}
+	if l.file != nil {
+		_ = l.file.Close()
+	}
+	portableRuntimeLock.Unlock()
+	return nil
 }

@@ -5,7 +5,7 @@ BUILD_COMPOSE ?= $(COMPOSE) -f docker-compose.yml -f docker-compose.build.yml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help env backend-tidy backend-test backend-api backend-worker frontend-install frontend-dev frontend-build compose-config compose-build compose-pull compose-up compose-up-build compose-up-backend compose-down compose-restart compose-logs compose-ps api-logs worker-logs db-logs redis-logs db-shell redis-cli backup-db restore-db clean
+.PHONY: help env backend-tidy backend-test backend-app frontend-install frontend-dev frontend-build compose-config compose-build compose-pull compose-up compose-up-build compose-up-backend compose-down compose-restart compose-logs compose-ps app-logs db-logs redis-logs db-shell redis-cli backup-db restore-db clean
 
 help:
 	@printf '%s\n' \
@@ -18,7 +18,7 @@ help:
 		'  make compose-pull        Pull release images' \
 		'  make compose-up          Start full stack from release images' \
 		'  make compose-up-build    Build locally and start full stack' \
-		'  make compose-up-backend  Start PostgreSQL, Redis, API, and worker only' \
+		'  make compose-up-backend  Start PostgreSQL, Redis, and the application' \
 		'  make compose-logs        Follow all service logs' \
 		'  make backup-db           Dump PostgreSQL into deploy/backups/' \
 		'  make clean               Stop stack and remove local Compose volumes'
@@ -32,11 +32,8 @@ backend-tidy:
 backend-test:
 	cd backend && go test ./...
 
-backend-api:
-	cd backend && go run ./cmd/api
-
-backend-worker:
-	cd backend && go run ./cmd/worker
+backend-app:
+	cd backend && go run ./cmd/app
 
 frontend-install:
 	cd frontend && pnpm install
@@ -63,7 +60,7 @@ compose-up-build:
 	$(BUILD_COMPOSE) --env-file $(ENV_FILE) up -d --build
 
 compose-up-backend:
-	$(COMPOSE) --env-file $(ENV_FILE) up -d --no-build postgres redis api worker
+	$(COMPOSE) --env-file $(ENV_FILE) up -d --no-build postgres redis app
 
 compose-down:
 	$(COMPOSE) --env-file $(ENV_FILE) down
@@ -77,11 +74,8 @@ compose-logs:
 compose-ps:
 	$(COMPOSE) --env-file $(ENV_FILE) ps
 
-api-logs:
-	$(COMPOSE) --env-file $(ENV_FILE) logs -f --tail=200 api
-
-worker-logs:
-	$(COMPOSE) --env-file $(ENV_FILE) logs -f --tail=200 worker
+app-logs:
+	$(COMPOSE) --env-file $(ENV_FILE) logs -f --tail=200 app
 
 db-logs:
 	$(COMPOSE) --env-file $(ENV_FILE) logs -f --tail=200 postgres
